@@ -1,0 +1,36 @@
+flowchart TD
+    UI["Vanilla Frontend\nfrontend/*.html"] --> API["Flask API\nbackend/app.py"]
+    API --> Engine["StoryEngine\nbackend/core/story_engine.py"]
+    API --> Metrics["PerformanceMonitor\nbackend/core/performance_monitor.py"]
+    API --> Jobs["BookJobQueue\nbackend/core/job_queue.py"]
+    API --> Cache["CacheLayer\nbackend/cache/cache_layer.py"]
+
+    Engine --> Location["LocationEngine\nbackend/external/location_engine.py"]
+    Engine --> Dataset["DatasetBridge\nbackend/data/dataset_bridge.py"]
+    Engine --> Chapter["ChapterGenerator\nbackend/core/chapter_generator.py"]
+    Engine --> State["NarrativeStateManager\nbackend/core/narrative_state_manager.py"]
+    Engine --> ResearchEngine["Research NarrativeEngine\nbackend/core/narrative_engine.py"]
+
+    Chapter --> Scene["SceneBuilder\nbackend/core/scene_builder.py"]
+    Chapter --> Hybrid["HybridSceneSelector\nbackend/research/hybrid_scene_selector.py"]
+    Hybrid --> Predictor["ScenePredictor RF/XGB\nbackend/research/scene_predictor*.py"]
+    State --> Intel["Narrative Intelligence\nsymbolic / causal / foreshadowing"]
+    Intel --> Literary["Literary Intelligence\ncharacter memory / arcs / coherence / dialogue / repetition"]
+
+    Dataset --> Validator["EntityValidator\nbackend/data/entity_validator.py"]
+    Dataset --> Processed["Processed Entity JSON\nbackend/data_processed/*.json"]
+
+    Location --> Cache
+    Cache --> Redis["Redis optional"]
+    Cache --> Memory["In-memory fallback"]
+
+    Research["Research Modules\nbackend/research/"] --> Manifest["Dataset Manifest\nbackend/research/dataset_manifest.py"]
+    Manifest --> Ingestion["Dataset Ingestion\nbackend/research/dataset_ingestion.py"]
+    Ingestion --> Retrieval["RAG Pipeline\nbackend/research/rag_pipeline.py"]
+    Retrieval --> Engine
+
+    ResearchEngine --> MemoryManager["MemoryManager\ncharacter + episodic + semantic + working"]
+    MemoryManager --> Embeddings["Embedding Memory\nencoder / vector store / retriever"]
+    ResearchEngine --> Evaluator["EvaluationPipeline\ncoherence / prediction / performance metrics"]
+    ResearchEngine --> Config["ResearchEngineConfig\nfeature flags + compatibility mode"]
+    Evaluator --> Dashboard["EvaluationDashboard\nHTML report"]

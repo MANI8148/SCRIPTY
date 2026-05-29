@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SCRIPTY Dashboard</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+  <header><h1>Performance Dashboard</h1><nav><a href="/">Generate</a><a href="/dashboard">Dashboard</a><a href="/cache">Cache</a><a href="/data-inspector">Data Inspector</a></nav></header>
+  <main>
+    <section class="panel"><h2>Generation</h2><table id="generation"></table></section>
+    <section class="panel"><h2>Cache</h2><table id="cache"></table></section>
+    <section class="panel"><h2>Narrative</h2><pre id="narrative"></pre></section>
+    <section class="panel"><h2>System</h2><pre id="system"></pre></section>
+  </main>
+  <script>
+    async function refresh() {
+      const m = await (await fetch('/api/metrics')).json();
+      generation.innerHTML = '<tr><th>Mode</th><th>Count</th><th>Avg ms</th><th>Avg words</th></tr>' +
+        Object.entries(m.generation.by_mode || {}).map(([k,v]) => `<tr><td>${k}</td><td>${v.count}</td><td>${v.avg_generation_time_ms}</td><td>${v.avg_word_count}</td></tr>`).join('');
+      cache.innerHTML = '<tr><th>Namespace</th><th>Hit rate</th></tr>' +
+        Object.entries(m.cache.hit_rate_by_namespace || {}).map(([k,v]) => `<tr><td>${k}</td><td>${Math.round(v*100)}%</td></tr>`).join('');
+      narrative.textContent = JSON.stringify(m.narrative, null, 2);
+      system.textContent = JSON.stringify(m.system, null, 2);
+    }
+    refresh(); setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

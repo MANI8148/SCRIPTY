@@ -1,0 +1,35 @@
+digraph SCRIPTY {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+
+  UI [label="Vanilla Frontend"];
+  API [label="Flask API"];
+  Engine [label="StoryEngine"];
+  Metrics [label="PerformanceMonitor"];
+  Jobs [label="BookJobQueue"];
+  Cache [label="CacheLayer"];
+  Location [label="LocationEngine"];
+  Dataset [label="DatasetBridge"];
+  Validator [label="EntityValidator"];
+  Chapter [label="ChapterGenerator"];
+  Scene [label="SceneBuilder"];
+  State [label="NarrativeStateManager"];
+  Research [label="Research Roadmap"];
+  Retrieval [label="Future Retrieval Layer"];
+
+  UI -> API;
+  API -> Engine;
+  API -> Metrics;
+  API -> Jobs;
+  API -> Cache;
+  Engine -> Location;
+  Engine -> Dataset;
+  Engine -> Chapter;
+  Engine -> State;
+  Chapter -> Scene;
+  Dataset -> Validator;
+  Location -> Cache;
+  Research -> Retrieval;
+  Retrieval -> Engine;
+}
+

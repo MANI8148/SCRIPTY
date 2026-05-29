@@ -1,0 +1,20 @@
+{
+  "examples": [
+    {
+      "features": {
+        "genre": "historical",
+        "genre_id": 4.0,
+        "scene_position": 0.0,
+        "tension": 0.2,
+        "protagonist_stage": "unaware",
+        "protagonist_stage_id": 0.0,
+        "antagonist_stage": "unaware",
+        "antagonist_stage_id": 0.0,
+        "unresolved_conflicts": 2.0,
+        "previous_scene_type": "description",
+        "previous_scene_type_id": 3.0
+      },
+      "target": "dialogue"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SCRIPTY</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>SCRIPTY Story Generator</h1>
+    <nav><a href="/">Generate</a><a href="/dashboard">Dashboard</a><a href="/cache">Cache</a><a href="/data-inspector">Data Inspector</a></nav>
+  </header>
+  <main>
+    <form id="storyForm">
+      <div class="grid">
+        <label>Location<input name="location" value="Hyderabad" required></label>
+        <label>Year / Era Anchor<input name="year" type="number" min="-10000" max="3000" value="2026"></label>
+        <label>Genre<input name="genre" value="Mystery"></label>
+        <label>Theme<input name="theme" value="truth and power"></label>
+        <label>Setting Period<input name="setting_period" placeholder="near future, mythic age, modern noir"></label>
+        <label>Mode<select name="story_mode" id="mode"><option value="short">Short</option><option value="chapter">Chapter</option><option value="book">Book</option></select></label>
+        <label id="chapterWrap" hidden>Chapters<input name="chapter_count" type="number" min="10" max="20" value="10"></label>
+      </div>
+      <label>Storyline / Premise<textarea name="storyline" rows="3" placeholder="A retired pilot discovers a city-wide conspiracy after a missing child leaves a coded map."></textarea></label>
+      <label>Characters<textarea name="characters" rows="4" placeholder="Mira Rao | protagonist | stubborn, compassionate | find her missing brother&#10;Ilyan Voss | antagonist | elegant, ruthless | control the archive"></textarea></label>
+      <label>Timeline Beats<textarea name="timeline_beats" rows="4" placeholder="The map appears during a blackout.&#10;Mira follows it into the abandoned transit tunnels.&#10;The archive reveals a false history."></textarea></label>
+      <label>Character Instructions<textarea name="character_instructions" rows="2" placeholder="Keep Mira practical under pressure. Ilyan should never sound cartoonishly evil."></textarea></label>
+      <label>Style Instructions<textarea name="style_instructions" rows="2" placeholder="Fast-paced, cinematic, emotionally grounded, no historical exposition unless relevant."></textarea></label>
+      <p><button type="submit">Generate</button> <button type="button" class="secondary" id="download" hidden>Download</button></p>
+      <div class="status" id="status"></div>
+    </form>
+    <section id="toc" class="toc"></section>
+    <section id="result" class="story"></section>
+  </main>
+  <script>
+    const form = document.getElementById('storyForm');
+    const mode = document.getElementById('mode');
+    const chapterWrap = document.getElementById('chapterWrap');
+    const statusBox = document.getElementById('status');
+    const result = document.getElementById('result');
+    const toc = document.getElementById('toc');
+    const download = document.getElementById('download');
+    let lastText = '';
+    mode.addEventListener('change', () => chapterWrap.hidden = mode.value !== 'book');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      statusBox.textContent = 'Generating...';
+      result.textContent = '';
+      toc.innerHTML = '';
+      const payload = Object.fromEntries(new FormData(form).entries());
+      payload.year = Number(payload.year);
+      payload.chapter_count = Number(payload.chapter_count || 10);
+      payload.characters = payload.characters || '';
+      payload.timeline_beats = payload.timeline_beats || '';
+      const res = await fetch('/api/generate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      const data = await res.json();
+      if (!res.ok) { statusBox.textContent = data.error || 'Generation failed'; return; }
+      if (data.job_id) {
+        statusBox.textContent = `Book queued: ${data.job_id}`;
+        pollJob(data.job_id);
+        return;
+      }
+      renderStory(data);
+    });
+    async function pollJob(jobId) {
+      const timer = setInterval(async () => {
+        const data = await (await fetch(`/api/job/${jobId}`)).json();
+        statusBox.textContent = `Book ${data.status}: ${data.progress.percent_complete}%`;
+        if (['completed', 'failed', 'timeout'].includes(data.status)) {
+          clearInterval(timer);
+          if (data.result) renderStory(data.result);
+        }
+      }, 1500);
+    }
+    function renderStory(data) {
+      const chapters = data.chapters || [];
+      lastText = data.story_text || '';
+      if (chapters.length) {
+        toc.innerHTML = '<h2>Contents</h2>' + chapters.map(ch => `<a href="#chapter-${ch.chapter_num}">${ch.title}</a>`).join('');
+        lastText = chapters.map(ch => `${ch.title}\n\n${ch.scenes.map(s => s.content).join('\n\n')}`).join('\n\n');
+      }
+      result.textContent = lastText;
+      statusBox.textContent = `${data.story_mode || 'story'} | ${data.word_count || lastText.split(/\s+/).length} words | ${data.generation_time_ms || 0} ms`;
+      download.hidden = false;
+    }
+    download.addEventListener('click', () => {
+      const blob = new Blob([lastText], {type: 'text/markdown'});
+      const a = Object.assign(document.createElement('a'), {href: URL.createObjectURL(blob), download: 'scripty-story.md'});
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+  </script>
+</body>
+</html>

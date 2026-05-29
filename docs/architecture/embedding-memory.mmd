@@ -1,0 +1,11 @@
+flowchart LR
+    Scene["Generated Scene"] --> MemoryEntry
+    MemoryEntry --> MemoryImportanceScorer
+    MemoryEntry --> EmbeddingEncoder
+    EmbeddingEncoder --> Cache["Embedding Cache"]
+    EmbeddingEncoder --> VectorStore
+    VectorStore --> SemanticMemoryRetriever
+    SemanticMemoryRetriever --> MemoryManager
+    MemoryManager --> Context["Chapter Context"]
+    Context --> SceneBuilder
+    SceneBuilder --> Continuity["Memory Continuity Checks"]

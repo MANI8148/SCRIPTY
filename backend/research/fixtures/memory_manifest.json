@@ -1,0 +1,14 @@
+{
+  "memories": [
+    {
+      "text": "Asha promised to protect the hidden archive.",
+      "scene_id": "c1s1",
+      "characters": ["Asha"],
+      "entities": ["Archive"],
+      "importance": 0.8,
+      "chapter_num": 1,
+      "scene_num": 1,
+      "memory_type": "promise"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+# macOS / editor noise
+.DS_Store
+**/.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+
+# Python generated files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# Runtime/cache output
+backend/cache_data/
+backend/runtime/
+backend/logs/
+*.log
+
+# Local agent/task artifacts
+AGENTS.md
+.kiro/
+docs/completions/
+STORY_GENERATION_REPORT.md
+story_system_updated.txt
+
+# Research/generated data artifacts
+backend/data_raw/
+backend/data_clean/
+backend/data_passages/
+backend/data_entities/
+backend/data/dataset_manifest.jsonl
+backend/research_output/
+reports/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Build/package output
+build/
+dist/
+*.egg-info/
+
+# Local database/output files
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl.tmp

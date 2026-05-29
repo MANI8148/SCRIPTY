@@ -1,0 +1,13 @@
+flowchart LR
+    ChapterGenerator --> MemoryManager
+    MemoryManager --> CharacterMemory
+    CharacterMemory --> Goals["Goals"]
+    CharacterMemory --> Emotion["Emotional State"]
+    CharacterMemory --> Relationships["Relationships"]
+    NarrativeStateManager --> CharacterArcTracker
+    SceneBuilder --> DialogueIntelligence
+    ChapterGenerator --> ScenePurposeValidator
+    EvaluationPipeline --> CoherenceScorer
+    EvaluationPipeline --> RepetitionDetector
+    NarrativePlanner --> ForeshadowingTracker
+    ForeshadowingTracker --> SceneBuilder

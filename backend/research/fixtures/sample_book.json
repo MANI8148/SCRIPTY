@@ -1,0 +1,13 @@
+{
+  "chapters": [
+    {
+      "chapter_num": 1,
+      "title": "Chapter 1: Description - Archive",
+      "summary": "Asha enters the archive and finds a clue.",
+      "scenes": [
+        {"scene_num": 1, "scene_type": "description", "content": "Asha entered the archive.", "word_count": 4, "tension_score": 0.2},
+        {"scene_num": 2, "scene_type": "dialogue", "content": "Asha asked Ravi about the map.", "word_count": 6, "tension_score": 0.5}
+      ]
+    }
+  ]
+}

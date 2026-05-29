@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SCRIPTY Data Inspector</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+  <header><h1>Data Quality Inspector</h1><nav><a href="/">Generate</a><a href="/dashboard">Dashboard</a><a href="/cache">Cache</a><a href="/data-inspector">Data Inspector</a></nav></header>
+  <main>
+    <section class="panel"><label>Book ID<input id="book" placeholder="pg11212-images"></label><p><button id="load">Load</button></p><div id="summary"></div><table id="rows"></table></section>
+  </main>
+  <script>
+    async function loadRows() {
+      const qs = book.value ? `?book_id=${encodeURIComponent(book.value)}` : '';
+      const data = await (await fetch('/api/entities' + qs)).json();
+      summary.textContent = `${data.total} entities, ${data.stats.loaded_files_count} files loaded`;
+      rows.innerHTML = '<tr><th>Type</th><th>Name</th><th>Confidence</th><th>Valid</th></tr>' +
+        data.entities.map(e => `<tr><td>${e.type}</td><td>${e.name}</td><td>${e.confidence}</td><td>${e.valid}</td></tr>`).join('');
+    }
+    load.onclick = loadRows; loadRows();
+  </script>
+</body>
+</html>

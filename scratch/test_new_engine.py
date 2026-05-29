@@ -1,11 +1,11 @@
-import sys
 import os
+import sys
 
-# Add backend to path
-sys.path.append(os.path.join(os.getcwd(), 'backend'))
+# Add repository root to path
+sys.path.append(os.getcwd())
 
-from story_engine import StoryEngine
-from control_system import validate_narrative_structure
+from backend.core.story_engine import StoryEngine
+from backend.control_system import block_dataset_patterns
 
 # Initialize engine
 engine = StoryEngine(data_dir="backend/data_processed")
@@ -22,5 +22,7 @@ print(story)
 
 # Verify structure
 print("\n--- Structural Verification ---")
-valid, msg = validate_narrative_structure(engine.story_state) # Note: new engine uses story_state as outline
-print(f"Valid: {valid}, Message: {msg}")
+paragraphs = [paragraph for paragraph in story.split("\n\n") if paragraph.strip()]
+safe, msg = block_dataset_patterns(story)
+valid = len(paragraphs) == 5 and safe
+print(f"Valid: {valid}, Paragraphs: {len(paragraphs)}, Message: {msg}")

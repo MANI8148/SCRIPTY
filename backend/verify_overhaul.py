@@ -4,14 +4,17 @@ Runs the StoryEngine to verify narrative quality, API cleaning, and role logic.
 """
 import sys
 import os
+import asyncio
 
 # Add the project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 try:
     from backend.core.story_engine import StoryEngine
+    from backend.core.data_models import StoryMode
 except ImportError:
     from core.story_engine import StoryEngine
+    from core.data_models import StoryMode
 
 def main():
     print("--- SCRIPTY SYSTEM VERIFICATION (V5 OVERHAUL) ---")
@@ -20,7 +23,8 @@ def main():
     
     print("\nGenerating Story for Hyderabad, 1920 (Colonial Era)...")
     try:
-        story = engine.generate_story("Hyderabad", 1920, "urban")
+        result = asyncio.run(engine.generate_story("Hyderabad", 1920, StoryMode.SHORT, location_type="urban"))
+        story = result["story_text"]
         print("\n--- GENERATED STORY ---")
         print(story)
         print("\n--- VERIFICATION STATS ---")

@@ -1,0 +1,13 @@
+flowchart LR
+    Chapters["Generated Chapters"] --> SceneDatasetGenerator
+    SceneDatasetGenerator --> SceneFeatureExtractor
+    SceneFeatureExtractor --> TrainingExamples["Training Examples"]
+    TrainingExamples --> RandomForestScenePredictor
+    TrainingExamples --> XGBoostScenePredictor
+    RandomForestScenePredictor --> ScenePredictor["Unified ScenePredictor"]
+    XGBoostScenePredictor --> ScenePredictor
+    ScenePredictor --> HybridSceneSelector
+    Rules["SceneConstraint Rules"] --> HybridSceneSelector
+    HybridSceneSelector --> ChapterGenerator
+    ChapterGenerator --> EvaluationPipeline
+    EvaluationPipeline --> EvaluationDashboard

@@ -1,114 +1,206 @@
 #!/usr/bin/env python3
 """
-Test Story Generation with Processed Dataset
-Generates sample stories using the fixed dataset processor output
+Comprehensive story generation test script.
+Tests various genres, locations, time periods, and chapter counts.
 """
-
-import sys
-import os
 import json
+import sys
+from pathlib import Path
 
-sys.path.insert(0, '/Users/manikantapotla/Desktop/SCRIPTY/backend')
+# Add backend to path
+sys.path.insert(0, str(Path(__file__).parent))
 
-from story_engine import StoryEngine
+from backend.core.narrative_engine import NarrativeEngine
+from backend.research.memory_manager import MemoryManager
+from backend.research.narrative_planner import NarrativePlanner
+from backend.research.rag_pipeline import RAGPipeline
+from backend.research.evaluation_pipeline import EvaluationPipeline
+from backend.research.experiment_tracker import ExperimentTracker
 
-def display_story(story_num, genre, theme, location, year, story_text):
-    """Format and display a generated story"""
-    print("=" * 70)
-    print(f"STORY #{story_num}")
-    print("=" * 70)
-    print(f"Genre: {genre}")
-    print(f"Theme: {theme}")
-    print(f"Location: {location}")
-    print(f"Year: {year}")
-    print("-" * 70)
-    print(story_text)
-    print()
 
-def check_processed_data():
-    """Verify processed data exists and is valid"""
-    data_dir = "backend/data_processed"
-    if not os.path.exists(data_dir):
-        print("✗ ERROR: Processed data directory not found")
-        return False
+def test_story_generation():
+    """Test story generation with various inputs."""
     
-    files = [f for f in os.listdir(data_dir) if f.endswith('.json')]
-    if not files:
-        print("✗ ERROR: No processed JSON files found")
-        return False
-    
-    # Check first file
-    with open(os.path.join(data_dir, files[0])) as f:
-        data = json.load(f)
-    
-    print(f"✓ Found {len(files)} processed dataset files")
-    print(f"✓ Sample data: {len(data.get('people', []))} people, {len(data.get('places', []))} places, {len(data.get('concepts', []))} concepts")
-    return True
-
-def main():
-    print("\n" + "=" * 70)
-    print("STORY GENERATION TEST - Using Processed Data")
-    print("=" * 70 + "\n")
-    
-    # Verify data
-    if not check_processed_data():
-        sys.exit(1)
-    
-    # Initialize engine
-    engine = StoryEngine(data_dir="backend/data_processed")
-    
-    # Generate multiple stories
-    story_configs = [
+    # Test configurations
+    test_cases = [
         {
-            "genre": "Historical Mystery",
-            "theme": "Sacrifice",
-            "location": "Hyderabad",
-            "year": 1910
-        },
-        {
-            "genre": "Historical Drama",
-            "theme": "Honor",
-            "location": "Bengal",
-            "year": 1905
-        },
-        {
-            "genre": "Political Thriller",
-            "theme": "Power",
+            "name": "Historical Fiction - Colonial India",
             "location": "Delhi",
-            "year": 1920
+            "year": 1857,
+            "chapter_count": 3,
+            "genre": "Historical Fiction",
+            "theme": "rebellion",
+            "random_seed": 42
+        },
+        {
+            "name": "Mystery - Victorian London",
+            "location": "London",
+            "year": 1888,
+            "chapter_count": 3,
+            "genre": "Mystery",
+            "theme": "investigation",
+            "random_seed": 43
+        },
+        {
+            "name": "Adventure - Ancient Egypt",
+            "location": "Cairo",
+            "year": 1350,
+            "chapter_count": 3,
+            "genre": "Adventure",
+            "theme": "discovery",
+            "random_seed": 44
+        },
+        {
+            "name": "Gothic - Medieval Europe",
+            "location": "Prague",
+            "year": 1450,
+            "chapter_count": 3,
+            "genre": "Gothic",
+            "theme": "darkness",
+            "random_seed": 45
+        },
+        {
+            "name": "Social Fiction - Industrial Revolution",
+            "location": "Manchester",
+            "year": 1840,
+            "chapter_count": 3,
+            "genre": "Social Fiction",
+            "theme": "class struggle",
+            "random_seed": 46
         }
     ]
     
-    print("\n" + "=" * 70)
-    print("GENERATING SAMPLE STORIES")
-    print("=" * 70 + "\n")
+    results = []
     
-    for i, config in enumerate(story_configs, 1):
-        print(f"[{i}/{len(story_configs)}] Generating: {config['genre']} - {config['theme']}")
+    print("=" * 80)
+    print("SCRIPTY COMPREHENSIVE STORY GENERATION TEST")
+    print("=" * 80)
+    print()
+    
+    for i, test_case in enumerate(test_cases, 1):
+        print(f"\n{'=' * 80}")
+        print(f"TEST {i}/{len(test_cases)}: {test_case['name']}")
+        print(f"{'=' * 80}")
+        print(f"Location: {test_case['location']}")
+        print(f"Year: {test_case['year']}")
+        print(f"Genre: {test_case['genre']}")
+        print(f"Theme: {test_case['theme']}")
+        print(f"Chapters: {test_case['chapter_count']}")
+        print(f"Random Seed: {test_case['random_seed']}")
+        print()
         
         try:
-            story = engine.create_structured_story(
-                config['genre'],
-                config['theme'],
-                config['location'],
-                config['year']
+            # Initialize engine with all subsystems
+            engine = NarrativeEngine(
+                memory_manager=MemoryManager(),
+                planner=NarrativePlanner(genre=test_case['genre']),
+                rag_pipeline=RAGPipeline(manifest_path="backend/data/test_manifest_fixture.jsonl"),
+                evaluation_pipeline=EvaluationPipeline(),
+                experiment_tracker=ExperimentTracker(log_path=f"backend/research_output/test_experiments.jsonl"),
+                output_dir="backend/research_output/test_stories"
             )
             
-            display_story(
-                i,
-                config['genre'],
-                config['theme'],
-                config['location'],
-                config['year'],
-                story
+            # Generate book
+            print("Generating story...")
+            result = engine.generate_book(
+                location=test_case['location'],
+                year=test_case['year'],
+                chapter_count=test_case['chapter_count'],
+                genre=test_case['genre'],
+                theme=test_case['theme'],
+                random_seed=test_case['random_seed']
             )
+            
+            # Extract metrics
+            chapters = result.get('chapters', [])
+            evaluation = result.get('evaluation', {})
+            metrics = evaluation.get('metrics', {})
+            session_id = result.get('session_id', 'unknown')
+            
+            # Print results
+            print(f"✅ SUCCESS - Generated {len(chapters)} chapters")
+            print(f"Session ID: {session_id}")
+            print()
+            
+            # Print chapter summaries
+            print("CHAPTERS:")
+            for j, chapter in enumerate(chapters, 1):
+                print(f"  {j}. {chapter.title}")
+                print(f"     Scenes: {len(chapter.scenes)}, Words: {chapter.word_count}")
+            print()
+            
+            # Print evaluation metrics
+            print("EVALUATION METRICS:")
+            print(f"  Repetition Rate: {metrics.get('repetition_rate', 0):.4f}")
+            print(f"  Character Consistency: {metrics.get('character_consistency', 0):.4f}")
+            print(f"  Narrative Coherence: {metrics.get('narrative_coherence', 0):.4f}")
+            print(f"  Genre Adherence: {metrics.get('genre_adherence', 0):.4f}")
+            print(f"  Plan Adherence: {metrics.get('plan_adherence', 0):.4f}")
+            print(f"  Graph Connectivity: {metrics.get('graph_connectivity', 0):.4f}")
+            print(f"  Retrieval Grounding: {metrics.get('retrieval_grounding', 0):.4f}")
+            print()
+            
+            # Store result
+            results.append({
+                "test_case": test_case['name'],
+                "status": "SUCCESS",
+                "chapters": len(chapters),
+                "total_words": sum(c.word_count for c in chapters),
+                "metrics": metrics,
+                "session_id": session_id
+            })
             
         except Exception as e:
-            print(f"✗ Error generating story: {e}\n")
+            print(f"❌ FAILED: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            results.append({
+                "test_case": test_case['name'],
+                "status": "FAILED",
+                "error": str(e)
+            })
     
-    print("=" * 70)
-    print("✓ STORY GENERATION TEST COMPLETE")
-    print("=" * 70)
+    # Summary
+    print("\n" + "=" * 80)
+    print("TEST SUMMARY")
+    print("=" * 80)
+    
+    successful = sum(1 for r in results if r['status'] == 'SUCCESS')
+    failed = sum(1 for r in results if r['status'] == 'FAILED')
+    
+    print(f"Total Tests: {len(results)}")
+    print(f"Successful: {successful}")
+    print(f"Failed: {failed}")
+    print(f"Success Rate: {(successful/len(results)*100):.1f}%")
+    print()
+    
+    if successful > 0:
+        print("AGGREGATE METRICS (Successful Tests):")
+        avg_chapters = sum(r.get('chapters', 0) for r in results if r['status'] == 'SUCCESS') / successful
+        avg_words = sum(r.get('total_words', 0) for r in results if r['status'] == 'SUCCESS') / successful
+        
+        print(f"  Average Chapters: {avg_chapters:.1f}")
+        print(f"  Average Total Words: {avg_words:.0f}")
+        
+        # Average metrics
+        metric_keys = ['repetition_rate', 'character_consistency', 'narrative_coherence', 
+                      'genre_adherence', 'plan_adherence', 'graph_connectivity', 'retrieval_grounding']
+        
+        for key in metric_keys:
+            values = [r['metrics'].get(key, 0) for r in results if r['status'] == 'SUCCESS' and 'metrics' in r]
+            if values:
+                avg = sum(values) / len(values)
+                print(f"  Average {key.replace('_', ' ').title()}: {avg:.4f}")
+    
+    # Save detailed results
+    output_file = Path("backend/research_output/test_generation_results.json")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(results, indent=2, default=str), encoding='utf-8')
+    print(f"\nDetailed results saved to: {output_file}")
+    
+    return successful == len(results)
+
 
 if __name__ == "__main__":
-    main()
+    success = test_story_generation()
+    sys.exit(0 if success else 1)

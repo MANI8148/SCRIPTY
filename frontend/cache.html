@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SCRIPTY Cache</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+  <header><h1>Cache Management</h1><nav><a href="/">Generate</a><a href="/dashboard">Dashboard</a><a href="/cache">Cache</a><a href="/data-inspector">Data Inspector</a></nav></header>
+  <main>
+    <section class="panel"><button id="clear">Clear All Cache</button><pre id="stats"></pre></section>
+  </main>
+  <script>
+    async function refresh(){ stats.textContent = JSON.stringify(await (await fetch('/api/cache/stats')).json(), null, 2); }
+    clear.onclick = async () => { if (confirm('Clear all cache entries?')) { await fetch('/api/cache', {method:'DELETE'}); refresh(); } };
+    refresh();
+  </script>
+</body>
+</html>

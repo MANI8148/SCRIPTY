@@ -38,11 +38,28 @@ When a user requests a story, the engine follows a deterministic, rule-based flo
 6. **NLP Cleanup:** Applies grammar utilities and article corrections for natural flow.
 
 ### 3. Tech Stack
-- **Frontend:** React / Next.js (Deployed on Vercel)
-- **Backend:** Python (Flask / FastAPI) (Deployed on Render)
-- **Database:** Supabase (PostgreSQL)
-- **NLP:** spaCy, NLTK
-- **Architecture:** Utilizes queue systems and async workers to handle heavy generation tasks at scale.
+- **Frontend:** Vanilla HTML/CSS/JavaScript in `frontend/`
+- **Backend:** Python 3.14 with Flask
+- **Cache:** Redis when available, in-memory fallback when unavailable
+- **NLP / Entity Quality:** NLTK-compatible validation and curated fallback lists
+- **Architecture:** Async location enrichment, background book jobs, metrics, and rule-based generation
+
+---
+
+## Project Documentation
+
+Architecture and implementation notes are available in:
+
+- `docs/PROJECT_CONTEXT.md`
+- `docs/architecture/system.mmd`
+- `docs/architecture/system.dot`
+- `docs/research_narrative_engine.md`
+
+Run the test suite from the repository root:
+
+```bash
+.venv/bin/python -m pytest -q
+```
 
 ---
 

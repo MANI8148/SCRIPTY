@@ -1,0 +1,59 @@
+# SCRIPTY Story Generation System - Docker Compose Configuration
+
+services:
+  # Redis cache service
+  redis:
+    image: redis:7-alpine
+    container_name: scripty-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - scripty-network
+
+  # Story engine service
+  story-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scripty-story-engine
+    ports:
+      - "5000:5000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CACHE_TTL_HOURS=24
+      - API_TIMEOUT_SECONDS=3
+      - ENTITY_VALIDATION_STRICT=true
+      - PORT=5000
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./backend:/app/backend
+      - ./dataset:/app/dataset
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - scripty-network
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  scripty-network:
+    driver: bridge

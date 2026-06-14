@@ -59,4 +59,5 @@ class RandomForestScenePredictor(FrequencyScenePredictor):
             self._classes = [str(item) for item in data["classes"]]
             self.model_available = True
         except Exception:
-            super().load_model(path)
+            self._model = None
+            self.model_available = False

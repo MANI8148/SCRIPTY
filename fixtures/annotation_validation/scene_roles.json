@@ -1,0 +1,82 @@
+[
+  {
+    "source_text": "The door creaked open. A new day began.",
+    "expected_output": {
+      "scene_role": "opening",
+      "should_pass": true
+    },
+    "rationale": "Introduces a new beginning with 'door creaked open' and 'new day' — classic opening signals."
+  },
+  {
+    "source_text": "Tension mounted with every step closer to the truth",
+    "expected_output": {
+      "scene_role": "rising_action",
+      "should_pass": true
+    },
+    "rationale": "'Tension mounted' and 'every step closer' indicate building stakes typical of rising action."
+  },
+  {
+    "source_text": "Everything came to a head as the gunshot echoed",
+    "expected_output": {
+      "scene_role": "climax",
+      "should_pass": true
+    },
+    "rationale": "'Came to a head' and 'gunshot echoed' are clear climax signals of peak conflict."
+  },
+  {
+    "source_text": "In the end, they sat in silence, the truth finally known",
+    "expected_output": {
+      "scene_role": "resolution",
+      "should_pass": true
+    },
+    "rationale": "'In the end', 'silence', 'finally known' indicate aftermath and resolution."
+  },
+  {
+    "source_text": "Days passed. Spring turned to summer.",
+    "expected_output": {
+      "scene_role": "transition",
+      "should_pass": true
+    },
+    "rationale": "Time passing and seasonal change are clear transition markers."
+  },
+  {
+    "source_text": "He ate breakfast",
+    "expected_output": {
+      "scene_role": "climax",
+      "should_pass": false
+    },
+    "rationale": "Obvious misclassification: eating breakfast is mundane, not a climax."
+  },
+  {
+    "source_text": "Weeks turned into months as the seasons shifted",
+    "expected_output": {
+      "scene_role": "transition",
+      "should_pass": true
+    },
+    "rationale": "'Weeks turned into months' and 'seasons shifted' directly indicate temporal transition."
+  },
+  {
+    "source_text": "The sun rose over the quiet village, smoke curling from chimneys",
+    "expected_output": {
+      "scene_role": "opening",
+      "should_pass": true
+    },
+    "rationale": "Setting description with 'sun rose' establishes a new scene opening."
+  },
+  {
+    "source_text": "His heart pounded as the countdown reached zero",
+    "expected_output": {
+      "scene_role": "rising_action",
+      "should_pass": false
+    },
+    "rationale": "This is actually a climax moment (countdown reaching zero with pounding heart), not rising action."
+  },
+  {
+    "source_text": "Dawn broke over the horizon, a new journey beginning",
+    "expected_output": {
+      "scene_role": "resolution",
+      "should_pass": false
+    },
+    "rationale": "'Dawn broke' and 'new journey beginning' are opening signals, not resolution."
+  }
+]

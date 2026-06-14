@@ -39,3 +39,14 @@ def test_narrative_and_system_metrics():
     assert metrics["narrative"]["pacing_variance"]["story"] > 0
     assert metrics["system"]["total_estimated_tokens"] == 500
     assert metrics["system"]["cost_efficiency"] == 10
+
+
+def test_tracks_latest_quality_metrics():
+    monitor = PerformanceMonitor()
+    monitor.track_quality_metrics("story", {"narrative_coherence": 0.75, "ignored": "n/a"})
+
+    metrics = monitor.get_metrics()
+
+    assert metrics["narrative"]["quality"]["story"]["narrative_coherence"] == 0.75
+    assert metrics["narrative"]["latest_quality"]["narrative_coherence"] == 0.75
+    assert "ignored" not in metrics["narrative"]["quality"]["story"]

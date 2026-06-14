@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
+
 from backend.research.scene_dataset_generator import SCENE_TYPES, SceneFeatureExtractor
 from backend.research.scene_predictor import FrequencyScenePredictor
 
@@ -47,3 +50,29 @@ class XGBoostScenePredictor(FrequencyScenePredictor):
             if label:
                 distribution[label] = float(probability)
         return self.normalize_distribution(distribution)
+
+    def save_model(self, path: str | Path) -> Path:
+        if self._model is None:
+            return super().save_model(path)
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            pickle.dump({
+                "model": self._model,
+                "label_to_index": self._label_to_index,
+                "index_to_label": self._index_to_label,
+            }, handle)
+        return target
+
+    def load_model(self, path: str | Path) -> None:
+        target = Path(path)
+        try:
+            with target.open("rb") as handle:
+                data = pickle.load(handle)
+            self._model = data["model"]
+            self._label_to_index = data["label_to_index"]
+            self._index_to_label = data["index_to_label"]
+            self.model_available = True
+        except Exception:
+            self._model = None
+            self.model_available = False

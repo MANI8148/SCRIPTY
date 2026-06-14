@@ -1,0 +1,110 @@
+[
+  {
+    "source_text": "Marcus walked into the room",
+    "expected_output": {
+      "participants": ["Marcus"],
+      "rejected_pronouns": [],
+      "should_pass": true
+    },
+    "rationale": "Simple named entity 'Marcus' should be extracted as a participant."
+  },
+  {
+    "source_text": "Marcus and Elena argued loudly",
+    "expected_output": {
+      "participants": ["Marcus", "Elena"],
+      "rejected_pronouns": [],
+      "should_pass": true
+    },
+    "rationale": "Multiple named entities 'Marcus' and 'Elena' should both be extracted."
+  },
+  {
+    "source_text": "He walked toward her",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": ["He", "her"],
+      "should_pass": true
+    },
+    "rationale": "All tokens are pronouns; 'He' and 'her' must be rejected, no participants extracted."
+  },
+  {
+    "source_text": "She saw John at the door",
+    "expected_output": {
+      "participants": ["John"],
+      "rejected_pronouns": ["She"],
+      "should_pass": true
+    },
+    "rationale": "'She' is a pronoun and must be rejected; 'John' is a named entity that should be extracted."
+  },
+  {
+    "source_text": "But he didn't know",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": ["But", "he"],
+      "should_pass": true
+    },
+    "rationale": "'But' is a capitalized conjunction that looks like a name but must be rejected. 'he' is also rejected."
+  },
+  {
+    "source_text": "In the beginning, Of all the things",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": ["In", "Of"],
+      "should_pass": true
+    },
+    "rationale": "'In' and 'Of' are capitalized prepositions, not entities; both must be rejected."
+  },
+  {
+    "source_text": "Captain Elena Vasquez gave the order",
+    "expected_output": {
+      "participants": ["Elena Vasquez"],
+      "rejected_pronouns": [],
+      "should_pass": true
+    },
+    "rationale": "Full name 'Elena Vasquez' should be extracted as a single participant with title ignored."
+  },
+  {
+    "source_text": "Dr. Sharma examined the patient",
+    "expected_output": {
+      "participants": ["Sharma"],
+      "rejected_pronouns": [],
+      "should_pass": true
+    },
+    "rationale": "Entity with title 'Dr. Sharma' should extract 'Sharma' as the participant."
+  },
+  {
+    "source_text": "This is the problem and that is the solution",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": ["This", "That"],
+      "should_pass": true
+    },
+    "rationale": "'This' and 'That' are demonstrative pronouns, not entities; both must be rejected."
+  },
+  {
+    "source_text": "It was waiting in the dark",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": ["It"],
+      "should_pass": true
+    },
+    "rationale": "'It' as a subject pronoun must be rejected; no participants to extract."
+  },
+  {
+    "source_text": "",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": [],
+      "should_pass": true
+    },
+    "rationale": "Empty text should yield no participants and no rejected pronouns."
+  },
+  {
+    "source_text": "The rain fell gently on the roof",
+    "expected_output": {
+      "participants": [],
+      "rejected_pronouns": [],
+      "should_pass": true
+    },
+    "rationale": "No named entities present; text contains only common nouns and articles."
+  }
+]

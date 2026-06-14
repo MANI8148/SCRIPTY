@@ -3,18 +3,18 @@ SCRIPTY - Location Engine (V4 - Async with Caching)
 Uses external APIs for real-world data with async/await pattern and caching support.
 Provides fallback to curated context when APIs fail.
 """
+from __future__ import annotations
+
 import random
 from typing import Optional
 
 try:
     from backend.external.apis import get_enriched_data
     from backend.data.curated_lists import CURATED_LOCATIONS
-    from backend.cache.cache_layer import CacheLayer
     from backend.utils.logging_config import get_logger
 except ImportError:
     from external.apis import get_enriched_data
     from data.curated_lists import CURATED_LOCATIONS
-    from cache.cache_layer import CacheLayer
     from utils.logging_config import get_logger
 
 logger = get_logger(__name__)

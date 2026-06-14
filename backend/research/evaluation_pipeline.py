@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
 from backend.research.coherence_scorer import CoherenceScorer
 from backend.research.evaluation_dashboard import EvaluationDashboard
 from backend.research.repetition_detector import RepetitionDetector
@@ -58,12 +62,13 @@ class EvaluationPipeline:
 
     def repetition_rate(self, texts: list[str]) -> float:
         words = self._tokens(" ".join(texts))
-        trigrams = list(zip(words, words[1:], words[2:]))
-        if not trigrams:
+        if len(words) < 3:
             return 0.0
-        unique = set(trigrams)
-        repeated = {item for item in unique if trigrams.count(item) > 1}
-        return len(repeated) / len(unique)
+        trigram_counts = Counter(zip(words, words[1:], words[2:]))
+        if not trigram_counts:
+            return 0.0
+        repeated = sum(1 for count in trigram_counts.values() if count > 1)
+        return repeated / len(trigram_counts)
 
     def rouge_l(self, candidate: str, reference: str) -> float:
         left, right = self._tokens(candidate), self._tokens(reference)
@@ -111,13 +116,13 @@ class EvaluationPipeline:
     def dialogue_alignment_score(self, chapters: list[Any], memory_manager: Any | None) -> float:
         if not memory_manager or not hasattr(memory_manager, "characters"):
             return 1.0
-            
+
         try:
             from backend.research.dialogue_listener import DialogueListenerModel
             listener = DialogueListenerModel()
         except ImportError:
             return 1.0
-            
+
         scores = []
         for chapter in chapters:
             for scene in getattr(chapter, "scenes", []):
@@ -127,21 +132,44 @@ class EvaluationPipeline:
                         if char_name in content:
                             score = listener.evaluate(char_name, content, record)
                             scores.append(score)
-        
+
         return sum(scores) / len(scores) if scores else 1.0
 
     def memory_metrics(self, memory_manager: Any | None) -> dict[str, float]:
         if memory_manager is None:
-            return {"memory_utilization_rate": 0.0, "retrieval_precision": 0.0, "retrieval_diversity": 0.0}
+            return {
+                "memory_utilization_rate": 0.0,
+                "retrieval_precision": 0.0,
+                "retrieval_recall": 0.0,
+                "retrieval_diversity": 0.0,
+            }
+
         retriever = getattr(memory_manager, "semantic_retriever", None)
-        utilization = float(getattr(retriever, "utilization_rate", lambda: 0.0)()) if retriever else 0.0
-        usage = getattr(memory_manager, "memory_utilization", {})
-        retrieved = sum(usage.values()) if usage else 0
-        precision = min(1.0, retrieved / max(1, retrieved)) if retrieved else 0.0
-        diversity = min(1.0, len(usage) / max(1, retrieved)) if retrieved else 0.0
+        try:
+            utilization = float(getattr(retriever, "utilization_rate", lambda: 0.0)()) if retriever else 0.0
+        except Exception:
+            utilization = 0.0
+
+        usage = getattr(memory_manager, "memory_utilization", {}) or {}
+        retrieved = sum(usage.values())
+        if not retrieved:
+            return {
+                "memory_utilization_rate": round(utilization, 6),
+                "retrieval_precision": 0.0,
+                "retrieval_recall": 0.0,
+                "retrieval_diversity": 0.0,
+            }
+
+        distinct_used = len(usage)
+        semantic = getattr(memory_manager, "semantic", None)
+        memory_size = len(getattr(semantic, "_facts", {}) or {})
+        precision = min(1.0, distinct_used / retrieved)
+        recall = min(1.0, distinct_used / memory_size) if memory_size else 0.0
+        diversity = min(1.0, distinct_used / max(1, retrieved))
         return {
             "memory_utilization_rate": round(utilization, 6),
             "retrieval_precision": round(precision, 6),
+            "retrieval_recall": round(recall, 6),
             "retrieval_diversity": round(diversity, 6),
         }
 
@@ -252,7 +280,10 @@ class EvaluationPipeline:
     def plan_adherence_score(self, chapters: list[Any], plan: Any | None) -> float:
         chapter_plans = getattr(plan, "chapter_plans", None) or getattr(plan, "chapters", None)
         if not chapter_plans:
-            return 0.0
+            logging.getLogger(__name__).info(
+                "plan_adherence_score: no chapter plans provided; returning neutral 1.0"
+            )
+            return 1.0
         scores: list[float] = []
         for chapter, chapter_plan in zip(chapters, chapter_plans):
             scenes = list(getattr(chapter, "scenes", []) or [])
@@ -298,20 +329,38 @@ class EvaluationPipeline:
         return round(max(0.0, min(1.0, coherence)), 6)
 
     def bleu4(self, candidate: str, reference: str) -> float:
+        if candidate == reference:
+            return 1.0 if candidate else 0.0
         try:
-            from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+            from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
+
             cand_tokens = self._tokens(candidate)
             ref_tokens = self._tokens(reference)
             if not cand_tokens or not ref_tokens:
                 return 0.0
-            return sentence_bleu([ref_tokens], cand_tokens, weights=(0.25, 0.25, 0.25, 0.25), smoothing_function=SmoothingFunction().method1)
+            return sentence_bleu(
+                [ref_tokens],
+                cand_tokens,
+                weights=(0.25, 0.25, 0.25, 0.25),
+                smoothing_function=SmoothingFunction().method1,
+            )
         except ImportError:
+            logging.getLogger(__name__).warning(
+                "nltk not available; BLEU-4 will be reported as 0.0. Install nltk to enable BLEU computation"
+            )
+            return 0.0
+        except Exception as exc:
+            logging.getLogger(__name__).warning("BLEU computation failed: %s", exc)
             return 0.0
 
     def get_bert_score(self, candidates: list[str], references: list[str]) -> BertScoreResult:
+        if os.getenv("SCRIPTY_ENABLE_BERT_SCORE", "").lower() not in {"1", "true", "yes"}:
+            return BertScoreResult(available=False)
         try:
-            import bert_score
             import warnings
+
+            import bert_score
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 P, R, F1 = bert_score.score(candidates, references, lang="en", verbose=False)
@@ -319,9 +368,15 @@ class EvaluationPipeline:
                 precision=P.mean().item(),
                 recall=R.mean().item(),
                 f1=F1.mean().item(),
-                available=True
+                available=True,
             )
         except ImportError:
+            logging.getLogger(__name__).warning(
+                "bert_score not available; BERTScore will be reported as unavailable"
+            )
+            return BertScoreResult(available=False)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("BERTScore computation failed: %s", exc)
             return BertScoreResult(available=False)
 
     def evaluate(
@@ -334,6 +389,8 @@ class EvaluationPipeline:
         references: list[str] | None = None,
         genre: str | None = None,
         conditioning: Any | None = None,
+        agent_decisions: dict[str, Any] | None = None,
+        agents: list[Any] | None = None,
     ) -> EvaluationReport:
         scenes = [scene.content for chapter in chapters for scene in getattr(chapter, "scenes", [])]
         candidate_text = " ".join(scenes)
@@ -344,10 +401,10 @@ class EvaluationPipeline:
             entity_name = getattr(fact, "entity_name", "")
             if entity_name:
                 known_entities.add(str(entity_name))
-        
+
         bleu_rouge_result = BleuRougeResult(0.0, 0.0)
         bert_score_result = BertScoreResult()
-        
+
         if references:
             reference_text = " ".join(references)
             bleu4_val = self.bleu4(candidate_text, reference_text)
@@ -417,12 +474,63 @@ class EvaluationPipeline:
         metrics.update(self.foreshadowing_metrics(getattr(graph, "foreshadowing", None)))
         metrics.update(self.prediction_metrics(scene_types, predicted_scene_types))
         metrics.update(self.scene_diversity_metrics(scene_types))
+        # Phase 7: Decision-aware metrics
+        decision_to_text_rate = 0.0
+        constraint_violation_rate = 0.0
+        action_verb_diversity = 0.0
+        dialogue_callback_presence_rate = 0.0
+
+        decision_scenes = 0
+        total_scenes = len(scenes)
+        verb_counts: Counter[str] = Counter()
+        dialogue_scenes = 0
+        dialogue_with_callback = 0
+
+        for chapter in chapters:
+            for scene in getattr(chapter, "scenes", []):
+                scene_type_val = str(getattr(getattr(scene, "scene_type", ""), "value", getattr(scene, "scene_type", "")))
+                content = getattr(scene, "content", "")
+                if scene_type_val == "dialogue":
+                    dialogue_scenes += 1
+                    use_words = {"recall", "remember", "earlier", "before", "prior", "previously", "that day", "last time"}
+                    if any(w in content.lower() for w in use_words):
+                        dialogue_with_callback += 1
+            decisions = getattr(chapter, "decisions_log", [])
+            for trace in decisions:
+                if isinstance(trace, dict):
+                    verb = (trace.get("chosen_action") or {}).get("verb", "") if isinstance(trace.get("chosen_action"), dict) else ""
+                    if verb:
+                        verb_counts[verb] += 1
+                    scene_type_from_trace = trace.get("scene_type", "")
+                    constraints = trace.get("graph_constraints", {})
+                    if isinstance(constraints, dict):
+                        blocked = constraints.get("blocked_pairs", [])
+                        forced = constraints.get("forced_scene_type")
+                        if blocked or forced:
+                            constraint_violation_rate += 1.0
+                    decision_scenes += 1
+
+        if total_scenes:
+            decision_to_text_rate = decision_scenes / total_scenes
+            constraint_violation_rate = constraint_violation_rate / total_scenes
+        if dialogue_scenes:
+            dialogue_callback_presence_rate = dialogue_with_callback / dialogue_scenes
+        if verb_counts:
+            total_verbs = sum(verb_counts.values())
+            entropy = -sum((c/total_verbs) * math.log2(c/total_verbs) for c in verb_counts.values())
+            max_entropy = math.log2(len(verb_counts))
+            action_verb_diversity = entropy / max_entropy if max_entropy else 0.0
+
+        metrics["decision_to_text_rate"] = round(decision_to_text_rate, 6)
+        metrics["constraint_violation_rate"] = round(constraint_violation_rate, 6)
+        metrics["action_verb_diversity"] = round(action_verb_diversity, 6)
+        metrics["dialogue_callback_presence_rate"] = round(dialogue_callback_presence_rate, 6)
         metrics["hybrid_coherence_impact"] = round(metrics["coherence_overall"] - metrics["narrative_coherence"], 6)
         return EvaluationReport(
             metrics=metrics,
             bleu_rouge=bleu_rouge_result,
             bert_score=bert_score_result,
-            adapter_mode=adapter_mode
+            adapter_mode=adapter_mode,
         )
 
     def serialize_report(self, report: EvaluationReport, output_dir: str, session_id: str) -> Path:
@@ -458,19 +566,19 @@ class AblationRunner:
             if not config.rag_enabled and hasattr(self.narrative_engine, "rag_pipeline"):
                 original_rag = self.narrative_engine.rag_pipeline.is_available
                 self.narrative_engine.rag_pipeline.is_available = lambda: False
-            
+
             req = dict(base_request)
             if not config.genre_conditioning_enabled:
                 req["genre"] = None
-                
+
             result = self.narrative_engine.generate_book(**req)
-            
+
             if original_rag is not None:
                 self.narrative_engine.rag_pipeline.is_available = original_rag
-                
+
             row = {"config": config.name, "metrics": result.get("evaluation", {}).get("metrics", {})}
             results.append(row)
-            
+
             if hasattr(self.experiment_tracker, "record"):
                 self.experiment_tracker.record(
                     random_seed=req.get("random_seed"),
@@ -480,9 +588,9 @@ class AblationRunner:
                         "memory_disabled": sorted(config.disabled_tiers),
                         "planner": config.planner_enabled,
                         "genre_conditioning": config.genre_conditioning_enabled,
-                        "ablation_config": config.name
+                        "ablation_config": config.name,
                     },
-                    metrics=row["metrics"]
+                    metrics=row["metrics"],
                 )
         return results
 

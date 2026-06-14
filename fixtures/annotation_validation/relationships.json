@@ -1,0 +1,110 @@
+[
+  {
+    "source_text": "They were lovers, passionate and devoted",
+    "expected_output": {
+      "relationship_type": "romance",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "Explicit 'lovers' and 'passionate' clearly indicate romance."
+  },
+  {
+    "source_text": "Marcus and Sen had been friends since childhood",
+    "expected_output": {
+      "relationship_type": "friendship",
+      "participants": ["Marcus", "Sen"],
+      "should_pass": true
+    },
+    "rationale": "Direct mention 'friends since childhood' with named participants indicates friendship."
+  },
+  {
+    "source_text": "She was his mother, and he respected her deeply",
+    "expected_output": {
+      "relationship_type": "family",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "'Mother' is a direct family relationship signal despite the respect language."
+  },
+  {
+    "source_text": "The two had been bitter rivals for years",
+    "expected_output": {
+      "relationship_type": "rivalry",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "'Bitter rivals' is an unambiguous rivalry signal."
+  },
+  {
+    "source_text": "He was her mentor, guiding her through every challenge",
+    "expected_output": {
+      "relationship_type": "mentorship",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "Direct 'mentor' keyword and 'guiding' make mentorship clear."
+  },
+  {
+    "source_text": "He held her close, their lips meeting",
+    "expected_output": {
+      "relationship_type": "romance",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "Physical intimacy ('held her close', 'lips meeting') strongly indicates romance, not friendship."
+  },
+  {
+    "source_text": "They supported each other through every crisis",
+    "expected_output": {
+      "relationship_type": "friendship",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "Mutual support signals friendship or family, not rivalry."
+  },
+  {
+    "source_text": "She was his partner at work and his confidante at home",
+    "expected_output": {
+      "relationship_type": "friendship",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "Text suggests multiple relationships (work partner, confidante); the system should handle ambiguity."
+  },
+  {
+    "source_text": "They were close",
+    "expected_output": {
+      "relationship_type": "friendship",
+      "participants": [],
+      "should_pass": false
+    },
+    "rationale": "Ambiguous 'close' needs more context; system should flag uncertainty rather than assume a type."
+  },
+  {
+    "source_text": "Brother and sister, they fought constantly",
+    "expected_output": {
+      "relationship_type": "family",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "'Brother and sister' is family despite 'fought constantly'; fighting does not make it rivalry."
+  },
+  {
+    "source_text": "Master and apprentice trained in the yard",
+    "expected_output": {
+      "relationship_type": "mentorship",
+      "participants": [],
+      "should_pass": true
+    },
+    "rationale": "'Master and apprentice' is a classic mentorship relationship."
+  },
+  {
+    "source_text": "He loved her like a sister",
+    "expected_output": {
+      "relationship_type": "romance",
+      "participants": [],
+      "should_pass": false
+    },
+    "rationale": "'Like a sister' explicitly frames the love as familial, not romantic; should not be classified as romance."
+  }
+]

@@ -34,6 +34,39 @@ class ScenePredictor(ABC):
             predictor.load_model(model_path)
         return predictor
 
+    @classmethod
+    def from_default(cls, model_dir: str | None = None) -> "ScenePredictor":
+        """Load best available predictor: RF > XGB > frequency fallback."""
+        if model_dir is None:
+            model_dir = str(Path(__file__).resolve().parent / "models")
+        rf_path = str(Path(model_dir) / "scene_predictor_rf.json")
+        xgb_path = str(Path(model_dir) / "scene_predictor_xgb.json")
+        # 1. Try RF
+        try:
+            from backend.research.scene_predictor_rf import RandomForestScenePredictor
+            rf = RandomForestScenePredictor()
+            rf.load_model(rf_path)
+            if rf.model_available:
+                return rf
+        except Exception:
+            pass
+        # 2. Try XGB
+        try:
+            from backend.research.scene_predictor_xgb import XGBoostScenePredictor
+            xgb = XGBoostScenePredictor()
+            xgb.load_model(xgb_path)
+            if xgb.model_available:
+                return xgb
+        except Exception:
+            pass
+        # 3. Frequency fallback
+        freq = FrequencyScenePredictor()
+        try:
+            freq.load_model(xgb_path)
+        except Exception:
+            pass
+        return freq
+
     @staticmethod
     def normalize_distribution(distribution: dict[str, float]) -> dict[str, float]:
         cleaned = {scene_type: max(0.0, float(distribution.get(scene_type, 0.0))) for scene_type in SCENE_TYPES}
@@ -88,7 +121,10 @@ class FrequencyScenePredictor(ScenePredictor):
         return target
 
     def load_model(self, path: str | Path) -> None:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return  # Binary or non-JSON file; stay with defaults
         self.target_counts = {str(k): float(v) for k, v in data.get("target_counts", {}).items()}
         self.transition_counts = {
             str(prev): {str(k): float(v) for k, v in counts.items()}

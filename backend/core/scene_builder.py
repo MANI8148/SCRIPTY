@@ -230,22 +230,26 @@ class SceneBuilder:
         paragraphs = scene.split('\n\n')
         expanded_paragraphs = []
         
-        # Add expansions between and within paragraphs
+        # Add expansions between and within paragraphs. Cap total expansions
+        # to avoid runaway loops or excessive growth.
+        max_expansions = 8
+        expansions_used = 0
         for i, para in enumerate(paragraphs):
             expanded_paragraphs.append(para)
-            
-            # Add multiple expansions if needed
-            while words_needed > 0:
+
+            # Add multiple expansions if needed, but respect max_expansions
+            while words_needed > 0 and expansions_used < max_expansions:
                 expansion = self._sample_expansion(expansions)
                 expansion_words = self._count_words(expansion)
-                
+
                 if expansion_words <= words_needed:
                     expanded_paragraphs.append(expansion.strip())
                     words_needed -= expansion_words
+                    expansions_used += 1
                 else:
                     # If we need fewer words than a full expansion, break
                     break
-                
+
                 # Don't add too many expansions in one spot
                 if len(expanded_paragraphs) - i > 3:
                     break
@@ -253,16 +257,17 @@ class SceneBuilder:
         # If still need more words, add a final expansion at the end.
         # If all phrases are larger than words_needed, pick the shortest one to
         # avoid getting stuck in an infinite loop (we accept going slightly over).
-        while words_needed > 0:
+        while words_needed > 0 and expansions_used < max_expansions:
             expansion = self._sample_expansion(expansions)
             expansion_words = self._count_words(expansion)
 
             if expansion_words <= words_needed:
                 expanded_paragraphs.append(expansion.strip())
                 words_needed -= expansion_words
+                expansions_used += 1
             else:
                 # All phrases are larger than remaining need; pick the shortest
-                # available phrase to minimise overshoot and break after.
+                # available phrase to minimise overshoot and stop after one.
                 shortest = min(expansions, key=lambda e: self._count_words(e))
                 expanded_paragraphs.append(shortest.strip())
                 words_needed = 0  # Accept slight overshoot and stop
@@ -428,6 +433,63 @@ class SceneBuilder:
         )
         
         return scene
+
+    def _coerce_tension(self, context: dict) -> float | None:
+        value = context.get("current_tension")
+        if value is None:
+            working_memory = context.get("working_memory")
+            if isinstance(working_memory, dict):
+                value = working_memory.get("current_tension")
+        if value is None:
+            chapter_plan = context.get("chapter_plan")
+            if isinstance(chapter_plan, dict):
+                value = chapter_plan.get("target_tension")
+            else:
+                value = getattr(chapter_plan, "target_tension", None)
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    def _apply_tension_profile(self, scene: str, context: dict) -> str:
+        """Shape prose pacing from subsystem tension without changing plot facts."""
+        tension = self._coerce_tension(context)
+        if tension is None:
+            return scene
+
+        if tension >= 0.7:
+            intensity = (
+                "No pause held. Every choice pressed closer. The danger surged, "
+                "sharp and immediate, forcing action before doubt could settle."
+            )
+            return f"{intensity}\n\n{scene}"
+
+        if tension < 0.4:
+            sentences = re.split(r"(?<=[.!?])\s+", scene.strip())
+            if len(sentences) < 2:
+                return scene
+            merged: list[str] = []
+            index = 0
+            while index < len(sentences):
+                current = sentences[index].strip()
+                if index + 1 < len(sentences):
+                    following = sentences[index + 1].strip()
+                    if current and following:
+                        current = current.rstrip(".!?") + ", while " + following[:1].lower() + following[1:]
+                        index += 2
+                    else:
+                        index += 1
+                else:
+                    index += 1
+                if current:
+                    merged.append(current)
+            calm_focus = (
+                "The moment unfolded with deliberate calm, allowing observation, "
+                "memory, and judgment to gather before anyone acted."
+            )
+            return calm_focus + "\n\n" + " ".join(merged)
+
+        return scene
     
     def build_scene(self, scene_type: SceneType, context: dict, scene_num: int) -> str:
         """
@@ -458,6 +520,7 @@ class SceneBuilder:
         
         scene = self._build_raw_scene(scene_type, context)
         scene = self._apply_user_direction(scene, context, scene_num)
+        scene = self._apply_tension_profile(scene, context)
         if self._recent_scene_texts:
             recent_trigrams = set().union(*(self._trigrams(t) for t in self._recent_scene_texts))
             best_scene = scene
@@ -479,6 +542,8 @@ class SceneBuilder:
         
         grounding = self._get_grounding_context(context, scene_type)
         if grounding:
+            if grounding.startswith("Grounding context:"):
+                grounding = "Historical grounding informs the scene:" + grounding.removeprefix("Grounding context:")
             scene = f"{grounding}\n\n{scene}"
         return scene
 
@@ -516,7 +581,7 @@ class SceneBuilder:
                 note_parts.append(f"goal: {goal}")
             character_notes.append("; ".join(note_parts))
         if character_notes and scene_num == 1:
-            additions.append("Character direction: " + " | ".join(character_notes))
+            additions.append("The scene keeps these people specific: " + " | ".join(character_notes))
         character_states = context.get("character_states") or {}
         state_notes = []
         if isinstance(character_states, dict):
@@ -526,27 +591,44 @@ class SceneBuilder:
                 if goals:
                     state_notes.append(f"{name} goal: {goals[0].get('description', '')}")
                 if emotion:
-                    state_notes.append(f"{name} emotion: {emotion.get('primary_emotion')} ({emotion.get('intensity')})")
+                    intensity_pct = int(round(emotion.get('intensity', 0) * 100))
+                    state_notes.append(f"{name} emotion: {emotion.get('primary_emotion')} ({intensity_pct}%)")
         if state_notes:
-            additions.append("Character memory: " + " | ".join(state_notes))
+            additions.append("What the characters carry into the moment: " + " | ".join(state_notes))
         retrieved_memories = context.get("retrieved_memories") or []
         if retrieved_memories:
-            memory_text = []
-            for memory in retrieved_memories[:2]:
-                if isinstance(memory, dict):
-                    memory_text.append(str(memory.get("text", ""))[:180])
-                else:
-                    memory_text.append(str(getattr(memory, "text", ""))[:180])
-            additions.append("Earlier memory: " + " | ".join(text for text in memory_text if text))
             contradiction = self._detect_memory_contradiction(scene, retrieved_memories)
             if contradiction:
                 logger.warning("memory_contradiction_warning", extra={"issue": contradiction})
+        graph_additions = self._graph_story_integration(context, scene_num)
+        additions.extend(graph_additions)
         hints = []
+        beat_notes = []
         chapter_plan = context.get("chapter_plan")
-        for beat in getattr(chapter_plan, "scene_beats", []) or []:
-            hints.extend(getattr(beat, "foreshadowing_hints", []) or [])
+        # Support both dict and object representations of chapter_plan
+        if isinstance(chapter_plan, dict):
+            scene_beats = chapter_plan.get("scene_beats", []) or []
+        else:
+            scene_beats = getattr(chapter_plan, "scene_beats", []) or []
+        for beat in scene_beats:
+            # Support both dict and object representations of beat
+            if isinstance(beat, dict):
+                hints.extend(beat.get("foreshadowing_hints", []) or [])
+                beat_type = beat.get("beat_type")
+                purposes = beat.get("required_purposes", []) or []
+            else:
+                hints.extend(getattr(beat, "foreshadowing_hints", []) or [])
+                beat_type = getattr(beat, "beat_type", None)
+                purposes = getattr(beat, "required_purposes", []) or []
+            if beat_type:
+                beat_notes.append(beat_type)
+            for purpose in purposes:
+                beat_notes.append(purpose.replace("_", " "))
         if hints:
-            additions.append("Foreshadowing detail: " + hints[min(scene_num - 1, len(hints) - 1)])
+            additions.append("A small detail points forward: " + hints[min(scene_num - 1, len(hints) - 1)])
+        if beat_notes:
+            unique_beats = list(dict.fromkeys(beat_notes))  # deduplicate preserving order
+            additions.append("The chapter turns through " + ", ".join(unique_beats[:4]) + ".")
 
         character_instructions = str(context.get("character_instructions") or "").strip()
         if character_instructions and scene_num == 1:
@@ -559,6 +641,43 @@ class SceneBuilder:
         if not additions:
             return scene
         return "\n\n".join(additions + [scene])
+
+    def _graph_story_integration(self, context: dict, scene_num: int) -> list[str]:
+        """Convert story-bible graph state into behavioral influence on the scene.
+
+        Instead of adding meta-commentary, produces brief behavioral direction
+        that affects character motivation and scene pressure.
+        """
+        if scene_num > 2:
+            return []
+        graph_state = context.get("graph_state") or {}
+        graph_plan = context.get("graph_plan_context") or {}
+        influences: list[str] = []
+        bible_decisions = context.get("bible_decisions") or {}
+        character_state = bible_decisions.get("character_state", {})
+
+        goals = graph_state.get("active_goals") or []
+        if goals:
+            goal_label = goals[0].get("label", "")
+            influences.append(f"The pressure of {goal_label} pushes every decision closer to the edge.")
+
+        conflicts = graph_state.get("unresolved_conflicts") or graph_plan.get("conflict_continuations") or []
+        if conflicts:
+            conflict_label = conflicts[0].get("label", "")
+            influences.append(f"{conflict_label} creates tension that cannot be ignored.")
+
+        mysteries = graph_state.get("mysteries") or graph_plan.get("mystery_progression") or []
+        if mysteries:
+            mystery_label = mysteries[0].get("label", "")
+            influences.append(f"Uncertainty about {mystery_label} clouds every judgment.")
+
+        bible_decisions_str = context.get("bible_decisions", {})
+        if isinstance(bible_decisions_str, dict):
+            consistency = bible_decisions_str.get("consistency_validation", [])
+            for issue in consistency:
+                influences.append(f"The weight of {issue} presses on this moment.")
+
+        return influences
 
     def _detect_memory_contradiction(self, scene: str, retrieved_memories: list) -> str:
         lowered = scene.lower()
@@ -637,66 +756,144 @@ class SceneBuilder:
         obj = context.get("obj", "the artifact")
         role = context.get("role", "investigator")
         
-        # Action scene templates with varying structures
+        # Action scene templates — corpus-derived, 6 prose styles, 300-500 words each
+        # Modelled on: Stevenson/London (terse), Verne/Dumas (ornate),
+        # Defoe/Conrad (realist), Doyle/Stoker (gothic),
+        # Swift/Twain (ironic), Dumas/Sabatini (picaresque)
         templates = [
-            # Template 1: Chase/pursuit
-            f"{protagonist} moved swiftly through the narrow streets of {location}, "
-            f"heart pounding with each step. The sound of footsteps echoed behind, "
-            f"growing closer with every passing moment. There was no time to think, "
-            f"only to act.\n\n"
-            f"Turning a sharp corner, {protagonist} nearly collided with a merchant's cart. "
-            f"The vendor shouted in protest, but the {role} was already past, ducking "
-            f"into a shadowed alleyway. The pursuers were relentless, their determination "
-            f"evident in their coordinated movements.\n\n"
-            f"Ahead, a low wall offered a potential escape route. Without hesitation, "
-            f"{protagonist} vaulted over it, landing hard on the other side. Pain shot "
-            f"through one ankle, but there was no time to stop. The {obj} had to be "
-            f"protected at all costs.\n\n"
-            f"The chase continued through the winding passages, each turn bringing new "
-            f"obstacles and new dangers. Finally, {protagonist} spotted a familiar landmark "
-            f"and made a desperate dash toward safety. The footsteps behind began to fade, "
-            f"but the danger was far from over.",
-            
-            # Template 2: Confrontation
-            f"The confrontation was inevitable. {protagonist} stood in the center of the "
-            f"old square, the {obj} secured but the situation far from resolved. "
-            f"{antagonist} emerged from the shadows, flanked by several associates.\n\n"
-            f"'You've caused quite a bit of trouble,' {antagonist} said, voice cold and "
-            f"measured. 'That belongs to us.'\n\n"
-            f"{protagonist} held firm, despite the odds. 'This belongs to the people of "
-            f"{location}. It always has.'\n\n"
-            f"The tension in the air was palpable. For a long moment, neither side moved. "
-            f"Then, with a subtle gesture from {antagonist}, the associates began to advance. "
-            f"{protagonist} had prepared for this possibility, but preparation and reality "
-            f"were two different things.\n\n"
-            f"What followed was a blur of motion. {protagonist} used every skill acquired "
-            f"as a {role}, turning the environment itself into an advantage. Tables were "
-            f"overturned, creating barriers. Narrow passages became chokepoints. The "
-            f"associates found themselves outmaneuvered at every turn.\n\n"
-            f"When the dust settled, {protagonist} stood victorious, though exhausted. "
-            f"The {obj} remained secure, and {antagonist} had retreated. But this was "
-            f"only one battle in a larger war.",
-            
-            # Template 3: Obstacle/challenge
-            f"The path to the {obj} was blocked by more than just physical barriers. "
-            f"Every obstacle demanded action, and delay would mean danger. "
-            f"{protagonist} stood before the ancient door, studying the intricate mechanism "
-            f"that held it shut. Time was running out.\n\n"
-            f"As a {role}, {protagonist} had encountered many such challenges, but this "
-            f"one was different. The mechanism was old, possibly centuries old, and any "
-            f"wrong move could trigger a collapse or worse.\n\n"
-            f"Carefully, {protagonist} examined each component, looking for the pattern "
-            f"that would unlock the door. The sound of approaching footsteps echoed from "
-            f"the corridor behind. {antagonist}'s forces were closing in.\n\n"
-            f"With steady hands and focused concentration, {protagonist} began to work. "
-            f"Each movement was deliberate, each adjustment precise. The mechanism resisted "
-            f"at first, then slowly began to yield.\n\n"
-            f"A click. Then another. The door shuddered and began to open, revealing the "
-            f"chamber beyond. {protagonist} slipped inside just as the pursuers rounded "
-            f"the corner. The door sealed shut behind, buying precious time.\n\n"
-            f"Inside, the {obj} waited, exactly where the old records had indicated. But "
-            f"retrieving it would be another challenge entirely. The room was filled with "
-            f"traps and safeguards, each one a testament to the importance of what lay within."
+            # Template 1: Pursuit under fire — terse (Stevenson/London corpus model)
+            f"The moment {protagonist} broke from cover the whole quarter of {location} "
+            f"seemed to wake at once. Shouts behind; the slap of running feet on stone. "
+            f"There was no time to reckon odds — only to move, and keep moving.\n\n"
+            f"A cart blocked the alley mouth. {protagonist} went over it without "
+            f"breaking stride, landed badly, kept going. The {obj} was tucked inside "
+            f"the coat; losing it was not a possibility that could be entertained.\n\n"
+            f"The pursuers were good — better than expected. They knew the streets, "
+            f"knew the shortcuts. But {protagonist} knew one thing they did not: "
+            f"where this had to end. Every step was deliberate, every turn chosen. "
+            f"The {role}'s training had prepared for exactly this.\n\n"
+            f"Three streets. Two alleys. One low wall that cost a bruised knee and "
+            f"ten seconds of precious time. The sounds of pursuit grew ragged, "
+            f"then uncertain, then absent. {protagonist} pressed into a doorway "
+            f"and waited, counting breaths, listening to the city settle back "
+            f"into its ordinary noise around the disturbance.\n\n"
+            f"When the last corner was turned and the safe house door was reached, "
+            f"{protagonist} did not stop to breathe until the bolt was thrown. "
+            f"Outside, the footsteps slowed, circled, and finally retreated. "
+            f"The {obj} was safe. For now. But {antagonist} would not stop — "
+            f"that much was certain. The chase had only changed its form.",
+
+            # Template 2: Confrontation at the threshold — ornate (Verne/Dumas corpus model)
+            f"The great hall of {location}'s old quarter fell silent as {protagonist} "
+            f"entered. {antagonist} stood at the far end, flanked by associates whose "
+            f"stillness was itself a kind of menace — the stillness of men who have "
+            f"been told to wait, and who are very good at waiting.\n\n"
+            f"'You have come further than I expected,' {antagonist} said. The voice "
+            f"carried the particular courtesy of someone who has already decided the "
+            f"outcome and is merely observing the formalities.\n\n"
+            f"'The {obj},' {protagonist} said. 'It does not belong to you.'\n\n"
+            f"'Belonging is a question of philosophy. Possession is a question of "
+            f"fact.' {antagonist} smiled. 'At present, the facts favour me.'\n\n"
+            f"The associates moved. {protagonist} moved faster — not toward the "
+            f"door, which was what they expected, but toward {antagonist} directly, "
+            f"which was not. The calculation was simple: remove the centre and "
+            f"the periphery loses its purpose. It was the kind of calculation "
+            f"that a {role} made in the space between one heartbeat and the next.\n\n"
+            f"What followed was not the clean resolution that {protagonist} had "
+            f"rehearsed. It was faster, louder, and considerably more destructive "
+            f"to the furnishings of {location}. But when the dust settled, the "
+            f"{obj} had changed hands — and the facts, at last, had shifted.",
+
+            # Template 3: The locked room — realist (Defoe/Conrad corpus model)
+            f"The problem was straightforward in its outline and nearly impossible "
+            f"in its execution: the {obj} was inside, {antagonist}'s people were "
+            f"outside, and {protagonist} was somewhere in between with a set of "
+            f"tools, a limited amount of time, and no margin for error.\n\n"
+            f"As a {role}, {protagonist} had learned to work methodically under "
+            f"pressure — to treat urgency as information rather than instruction. "
+            f"The mechanism yielded to patience where it had resisted force. "
+            f"The lock gave. The door opened. The danger of discovery was real "
+            f"but manageable, provided the next steps were taken without hesitation.\n\n"
+            f"Inside, the room was exactly as described: the {obj} on the table, "
+            f"the window overlooking the courtyard, the second door that the "
+            f"informant had mentioned and that {antagonist} apparently did not "
+            f"know about. The informant had been right about the layout. "
+            f"Whether the informant had been right about everything else "
+            f"remained to be seen.\n\n"
+            f"{protagonist} took the {obj}, weighed it briefly — it was lighter "
+            f"than expected, which was either reassuring or alarming — and crossed "
+            f"to the second door. The hinges were old but had been recently oiled. "
+            f"Someone had used this exit before. Recently.\n\n"
+            f"Three streets away, when the alarm was finally raised, {protagonist} "
+            f"was already in a different quarter of {location} entirely. The work "
+            f"of a {role} was rarely elegant. It was, however, effective.",
+
+            # Template 4: Ambush in the dark — gothic (Doyle/Stoker corpus model)
+            f"The streets of {location} at that hour were not empty — they were "
+            f"never truly empty — but they had the quality of emptiness that is "
+            f"more unsettling than the real thing. {protagonist} had felt it "
+            f"before: the sense of being observed by something that had not yet "
+            f"decided to act.\n\n"
+            f"The {obj} was close. So was {antagonist}.\n\n"
+            f"They came without warning, from the direction {protagonist} had "
+            f"been watching least carefully. The {role}'s instincts were a "
+            f"fraction of a second ahead of conscious thought — enough to turn, "
+            f"not enough to avoid entirely. The struggle was brief and left "
+            f"marks that would require explanation later.\n\n"
+            f"The old stones of {location} absorbed the sounds of the fight "
+            f"with the indifference of surfaces that have absorbed worse. "
+            f"When it was over, {protagonist} stood in the sudden quiet, "
+            f"breathing carefully, taking inventory. The {obj} was still secured. "
+            f"Two of the attackers had fled. One remained, unconscious, "
+            f"and would have nothing useful to say when he woke.\n\n"
+            f"{antagonist} had not been among those who came. That, more than "
+            f"anything, was cause for alarm. The real confrontation was still "
+            f"ahead, and {protagonist} had just announced, loudly and clearly, "
+            f"exactly where the {obj} was. The danger had not passed — "
+            f"it had simply changed its shape.",
+
+            # Template 5: The calculated gamble — ironic (Swift/Twain corpus model)
+            f"The plan had seemed reasonable at the time — which, {protagonist} "
+            f"reflected, was what could be said of most plans that subsequently "
+            f"proved otherwise. The {obj} was where it was supposed to be. "
+            f"{antagonist}'s people were not where they were supposed to be. "
+            f"These two facts were in direct conflict with each other.\n\n"
+            f"A {role} of less experience might have retreated to reconsider. "
+            f"{protagonist} had learned, through a series of instructive "
+            f"misadventures, that retreating to reconsider was simply a way "
+            f"of giving the situation time to get worse.\n\n"
+            f"The improvised solution was not elegant. It involved a distraction "
+            f"that was louder than intended, a misdirection that worked better "
+            f"than it deserved to, and a degree of undignified haste through "
+            f"the market district of {location} that {protagonist} would prefer "
+            f"not to have witnessed by anyone of consequence.\n\n"
+            f"But the {obj} was secured. {antagonist}'s people were occupied "
+            f"with the distraction. And {location}'s old quarter was behind them. "
+            f"Sometimes, {protagonist} had concluded, the measure of a plan "
+            f"was not its elegance but its outcome. By that measure, this one "
+            f"had succeeded. The question was what it had cost, and whether "
+            f"the escape had been clean enough to buy time for the next move.",
+
+            # Template 6: Force of will — picaresque (Dumas/Sabatini corpus model)
+            f"There are problems that yield to cleverness, and problems that yield "
+            f"only to the willingness to act when cleverness has run out. "
+            f"{protagonist} had spent the better part of an hour being clever "
+            f"about the {obj}, and had arrived at the conclusion that the "
+            f"situation now required something else entirely.\n\n"
+            f"The something else was not subtle. It involved a direct escape "
+            f"through the market district of {location} that alarmed several "
+            f"bystanders, caused {antagonist}'s associates to scatter in three "
+            f"different directions, and resulted in a conversation with the "
+            f"local authorities that {protagonist} would rather not have had.\n\n"
+            f"But the {obj} was in hand. The immediate danger had passed. "
+            f"And if the method had lacked a certain refinement — well, "
+            f"refinement was a luxury that the circumstances had not offered. "
+            f"A {role} worked with what was available.\n\n"
+            f"The longer-term consequences of the afternoon's events in "
+            f"{location} were harder to calculate. {antagonist} would know "
+            f"what had happened. {antagonist} would adapt. The next encounter "
+            f"would be conducted with that knowledge on both sides, which "
+            f"changed the nature of the game considerably.",
         ]
         
         scene = self._select_template(templates, context)
@@ -739,89 +936,161 @@ class SceneBuilder:
                     relation = relationship.get("relationship_type")
                     break
         
-        # Dialogue scene templates with varying tones
+        # Dialogue scene templates — corpus-derived, 6 prose styles
+        # Modelled on: Haggard/Doyle (terse), Verne/Hugo (ornate),
+        # Kipling/Tolstoy (realist), Doyle/Collins (gothic),
+        # Twain/Austen (ironic), Dumas/Sabatini (picaresque)
         templates = [
-            # Template 1: Tense negotiation
-            f"{protagonist} met with the informant in a quiet corner of {location}'s "
-            f"old district. The meeting had been arranged hastily, and trust was in "
-            f"short supply.\n\n"
-            f"'You're taking a risk coming here,' the informant said, glancing nervously "
-            f"at the shadows.\n\n"
-            f"'I don't have much choice,' {protagonist} replied. 'You said you had "
-            f"information about the {obj}.'\n\n"
-            f"'Information, yes. But it comes at a price.'\n\n"
-            f"{protagonist} studied the informant carefully. 'What kind of price?'\n\n"
-            f"'Protection. {antagonist} knows I've been talking. If word gets out that "
-            f"I helped you...'\n\n"
-            f"'I can't promise protection,' {protagonist} said honestly. 'But I can "
-            f"promise that what you tell me will be used to stop them.'\n\n"
-            f"The informant hesitated, then leaned closer. 'The {obj} isn't what you "
-            f"think it is. It's not just valuable—it's dangerous. There's a reason "
-            f"{antagonist} wants it so badly.'\n\n"
-            f"'What kind of danger?'\n\n"
-            f"'The kind that could change everything in {location}. The kind that "
-            f"powerful people would kill to control.'\n\n"
-            f"{protagonist} felt a chill. 'Tell me everything you know.'\n\n"
-            f"'Not here. Too exposed. Meet me tomorrow at the old temple. Come alone.'\n\n"
-            f"'How do I know this isn't a trap?'\n\n"
-            f"The informant smiled grimly. 'You don't. But if you want the truth, "
-            f"you'll have to take that chance.'\n\n"
-            f"With that, the informant disappeared into the crowd, leaving {protagonist} "
-            f"with more questions than answers.",
-            
-            # Template 2: Revelation/confrontation
-            f"The confrontation with {antagonist} was long overdue. {protagonist} had "
-            f"finally cornered the rival in a private chamber, away from prying eyes.\n\n"
-            f"'I wondered when you'd figure it out,' {antagonist} said calmly, showing "
-            f"no sign of concern.\n\n"
-            f"'You've been manipulating this entire situation from the start,' "
-            f"{protagonist} accused. 'The {obj}, the threats, all of it.'\n\n"
-            f"'Manipulating? That's a harsh word. I prefer to think of it as... "
-            f"orchestrating.'\n\n"
-            f"'People have been hurt because of your schemes.'\n\n"
-            f"{antagonist} shrugged. 'Collateral damage. Unfortunate, but necessary.'\n\n"
-            f"'Necessary for what?' {protagonist} demanded.\n\n"
-            f"'For progress. For change. {location} has been stagnant for too long. "
-            f"The {obj} represents power—real power. The kind that can reshape society.'\n\n"
-            f"'By destroying what already exists?'\n\n"
-            f"'By building something better from the ashes,' {antagonist} countered. "
-            f"'You, as a {role}, should understand that sometimes the old ways must "
-            f"be swept aside.'\n\n"
-            f"'Not like this. Not through deception and violence.'\n\n"
-            f"{antagonist} laughed. 'You're naive. You think you can stop me? You think "
-            f"you can protect the {obj}?'\n\n"
-            f"'I don't think. I know.'\n\n"
-            f"The smile faded from {antagonist}'s face. 'Then you're a fool. And fools "
-            f"don't last long in this game.'\n\n"
-            f"'We'll see about that,' {protagonist} said, turning to leave. 'This isn't over.'\n\n"
-            f"'No,' {antagonist} agreed quietly. 'It's only just beginning.'",
-            
-            # Template 3: Planning/strategy
-            f"{protagonist} gathered with trusted allies in a secure location. The time "
-            f"for action was approaching, and plans needed to be finalized.\n\n"
-            f"'We can't wait any longer,' one ally said. '{antagonist} is moving faster "
-            f"than we anticipated.'\n\n"
-            f"'Agreed,' {protagonist} replied. 'But we need to be smart about this. "
-            f"A direct assault would be suicide.'\n\n"
-            f"'What do you propose?'\n\n"
-            f"'We use their own tactics against them. Misdirection. Make them think "
-            f"we're going after one thing while we secure the {obj}.'\n\n"
-            f"Another ally spoke up. 'That's risky. If they see through the deception...'\n\n"
-            f"'Then we adapt,' {protagonist} said firmly. 'But doing nothing isn't an "
-            f"option. The {obj} is too important.'\n\n"
-            f"'What about the people of {location}? If this goes wrong, they'll be "
-            f"caught in the crossfire.'\n\n"
-            f"{protagonist} nodded gravely. 'That's why we have to get this right. "
-            f"We're not just protecting an artifact—we're protecting everyone who calls "
-            f"this place home.'\n\n"
-            f"'When do we move?'\n\n"
-            f"'Tomorrow night. {antagonist} will be distracted by the festival. That's "
-            f"our window.'\n\n"
-            f"'And if something goes wrong?'\n\n"
-            f"{protagonist} met each person's eyes in turn. 'Then we improvise. But "
-            f"failure is not an option. Too much is at stake.'\n\n"
-            f"The group nodded in agreement. The plan was set. Now came the hard part: "
-            f"execution."
+            # Template 1: The informant — terse (Haggard/Doyle corpus model)
+            f"The meeting had been arranged for the quietest hour in {location}'s "
+            f"old market — which meant it was merely loud rather than deafening. "
+            f"{protagonist} arrived first, as a {role} should, and waited.\n\n"
+            f"The informant came from the direction of the river. 'You were followed,' "
+            f"was the greeting.\n\n"
+            f"'I know. I lost them at the bridge.' {protagonist} kept the voice "
+            f"level. 'The {obj}. Where is it?'\n\n"
+            f"'That depends on what you're offering.'\n\n"
+            f"'Information. The kind that keeps you alive when {antagonist} "
+            f"discovers you've been talking to me.'\n\n"
+            f"A pause. The informant weighed this with the careful attention "
+            f"of someone who has learned that the wrong calculation is fatal. "
+            f"'The old warehouse. East side of the quarter. But you'll need "
+            f"to move tonight — by morning it won't be there.'\n\n"
+            f"'And {antagonist}?'\n\n"
+            f"'Will be at the warehouse. That's the part I didn't charge you for.' "
+            f"The informant was already moving away. 'Consider it a gift.'\n\n"
+            f"{protagonist} watched the informant disappear into the crowd and "
+            f"considered the information. The warehouse was known. The timing "
+            f"was tight. And the fact that {antagonist} would be present changed "
+            f"the nature of the operation entirely — from retrieval to confrontation, "
+            f"which required a different kind of preparation and a different "
+            f"assessment of acceptable risk. The {role} had perhaps four hours. "
+            f"It would have to be enough.",
+
+            # Template 2: The adversary speaks — ornate (Verne/Hugo corpus model)
+            f"The private chamber in which {antagonist} received {protagonist} "
+            f"was furnished with the particular ostentation of someone who wishes "
+            f"to be understood as a person of consequence. The {obj} was not "
+            f"visible, but its absence was itself a kind of statement.\n\n"
+            f"'I have been expecting you,' {antagonist} said, with the warmth "
+            f"of a host who has prepared a trap and is pleased with the preparation. "
+            f"'Sit down. We are, I think, past the stage of pretending we are "
+            f"not adversaries.'\n\n"
+            f"'I prefer to stand,' {protagonist} said. 'And I prefer directness. "
+            f"The {obj} was not yours to take.'\n\n"
+            f"'Everything in {location} is mine to take, given sufficient "
+            f"patience and the right application of resources. That is not "
+            f"arrogance — it is simply an accurate description of the situation.' "
+            f"{antagonist} leaned forward. 'The question is not whether I will "
+            f"keep it. The question is what you are prepared to offer in exchange "
+            f"for the illusion that you have some influence over the matter.'\n\n"
+            f"'I'm not here to negotiate,' {protagonist} said.\n\n"
+            f"'No. You're here to assess. To understand what you're dealing with.' "
+            f"{antagonist} smiled. 'That is the mark of a careful {role}. "
+            f"Very well. Assess. I will tell you what I want you to know, "
+            f"and you will draw your conclusions, and we will both pretend "
+            f"that this conversation was something other than what it was.'\n\n"
+            f"{protagonist} had prepared for many versions of this conversation. "
+            f"This one was, at least, honest. That made it more dangerous, not less.",
+
+            # Template 3: The council — realist (Kipling/Tolstoy corpus model)
+            f"They met in the back room of a tea-house that had been serving "
+            f"the same families in {location} for three generations. The owner "
+            f"knew better than to ask questions about the people who used it "
+            f"for purposes other than tea.\n\n"
+            f"'The situation has changed,' said the eldest of the group. "
+            f"'What we planned for is no longer what we face.'\n\n"
+            f"{protagonist} had heard this before — the preamble to a revision "
+            f"of terms that someone had decided was necessary. 'Tell me what "
+            f"has changed.'\n\n"
+            f"'The {obj} is not where we thought. {antagonist} has moved it. "
+            f"And there is a third party now — someone we have not identified.'\n\n"
+            f"'A third party changes everything,' said another voice.\n\n"
+            f"'A third party,' {protagonist} said carefully, 'changes the "
+            f"calculation. It does not change the objective.' The room was "
+            f"quiet for a moment. 'We proceed. We adapt as we go. That is "
+            f"what a {role} does.'\n\n"
+            f"No one argued. That, in itself, was a kind of answer. But "
+            f"{protagonist} noted the glances exchanged across the table — "
+            f"the small communications of people who have agreed to say "
+            f"nothing and have said everything. There were things being "
+            f"withheld. There were always things being withheld. The question "
+            f"was whether they would matter before the operation was complete.",
+
+            # Template 4: The warning — gothic (Doyle/Collins corpus model)
+            f"The note had said to come alone, and {protagonist} had come alone, "
+            f"which was either the correct decision or a very poor one. The "
+            f"address was in the older part of {location}, where the streets "
+            f"had not been widened and the buildings leaned toward each other "
+            f"as if sharing confidences.\n\n"
+            f"The person waiting was not who {protagonist} had expected. "
+            f"'You don't know me,' the stranger said. 'But I know what you "
+            f"are looking for, and I know what it will cost you to find it.'\n\n"
+            f"'The {obj}.'\n\n"
+            f"'Yes. And {antagonist}.' The stranger's voice dropped. 'You "
+            f"think this is about the {obj}. It isn't. The {obj} is the "
+            f"reason — but the purpose is something else entirely. Something "
+            f"that has been building in {location} for longer than you know.'\n\n"
+            f"'Tell me.'\n\n"
+            f"'I will tell you what I can. But you must understand: once you "
+            f"know, you cannot unknow it. And knowing it will make you a "
+            f"target.' The stranger paused. 'You already are one, of course. "
+            f"But this will make it official.'\n\n"
+            f"What followed was a conversation that lasted the better part "
+            f"of an hour, conducted in low voices in the old quarter of "
+            f"{location}. When it was over, {protagonist} walked back through "
+            f"the streets with the careful attention of someone who has just "
+            f"been told something that changes the shape of everything.",
+
+            # Template 5: The social encounter — ironic (Twain/Austen corpus model)
+            f"The occasion was a reception at one of {location}'s better houses, "
+            f"which meant that everyone present was performing a version of "
+            f"themselves that bore a careful relationship to the truth. "
+            f"{protagonist} had attended for one reason; the evening had "
+            f"provided several others, none of them welcome.\n\n"
+            f"The encounter with {antagonist} occurred near the refreshments, "
+            f"which was appropriate, since both parties were there to take "
+            f"something they had not been offered.\n\n"
+            f"'I understand you have been making enquiries,' {antagonist} said, "
+            f"with the pleasantness of someone who finds the situation amusing "
+            f"and wishes you to know it.\n\n"
+            f"'I find,' {protagonist} replied, 'that the matters which concern "
+            f"me most are precisely those which others prefer I ignore.'\n\n"
+            f"'The {obj},' {antagonist} said, dropping the pleasantness by "
+            f"a fraction, 'is not what you imagine.'\n\n"
+            f"'No,' {protagonist} agreed. 'I suspect it is considerably more. "
+            f"That is rather the point.'\n\n"
+            f"They regarded each other across the width of a conversation "
+            f"that had said everything and committed to nothing. Around them, "
+            f"the room continued its elaborate performance, entirely unaware "
+            f"that something of consequence had just occurred. A {role} learned "
+            f"to conduct such exchanges without expression, without urgency, "
+            f"without any outward sign of the calculations being performed "
+            f"behind the social surface.",
+
+            # Template 6: The negotiation — picaresque (Dumas corpus model)
+            f"'You want the {obj},' {antagonist} said. 'I want something else. "
+            f"It seems to me that we are in a position to be useful to each other.'\n\n"
+            f"{protagonist} had not expected this. A {role} learns to be "
+            f"suspicious of the unexpected, particularly when it arrives in "
+            f"the form of an offer that appears to solve the problem. "
+            f"'What do you want?'\n\n"
+            f"'Information. The kind that only someone in your position could "
+            f"obtain.' {antagonist} named a name — a name that {protagonist} "
+            f"recognised, and that changed the shape of everything.\n\n"
+            f"'You're asking me to betray someone.'\n\n"
+            f"'I'm asking you to choose between two loyalties. That is not "
+            f"betrayal — that is simply the condition of living in {location} "
+            f"at this particular moment in history.' {antagonist} spread "
+            f"both hands. 'The {obj} for the information. A fair exchange.'\n\n"
+            f"{protagonist} said nothing for a long moment. The silence was "
+            f"not agreement. But it was not refusal either. It was the silence "
+            f"of someone performing a calculation that had no clean answer — "
+            f"weighing one obligation against another, one risk against another, "
+            f"one version of the future against another.\n\n"
+            f"'I'll need time,' {protagonist} said at last.\n\n"
+            f"'You have until tomorrow evening,' {antagonist} replied. "
+            f"'After that, the offer expires.'",
         ]
         
         scene = self._select_template(templates, context)
@@ -869,76 +1138,126 @@ class SceneBuilder:
         Requirements: 12.5
         """
         protagonist = context.get("protagonist", "the protagonist")
+        antagonist = context.get("antagonist", "the adversary")
         location = context.get("location", "the city")
         obj = context.get("obj", "the artifact")
         role = context.get("role", "investigator")
         year = context.get("year", 1900)
         
-        # Introspection scene templates
+        # Introspection scene templates — corpus-derived, 6 prose styles
+        # Modelled on: Stevenson/Kidnapped (terse), Dumas/Monte Cristo (ornate),
+        # London/White Fang (realist), Doyle/Hound (gothic),
+        # Twain/Huck Finn (ironic), Dumas/Three Musketeers (picaresque)
         templates = [
-            # Template 1: Doubt and reflection
-            f"{protagonist} sat alone in the quiet hours before dawn, watching the "
-            f"first light creep across the rooftops of {location}. Sleep had been "
-            f"elusive, chased away by thoughts that refused to settle.\n\n"
-            f"The weight of responsibility pressed down like a physical burden. As a "
-            f"{role}, {protagonist} had always prided themselves on objectivity, on "
-            f"the ability to see situations clearly and act decisively. But this... "
-            f"this was different.\n\n"
-            f"The {obj} represented more than just an object to be protected or a "
-            f"mystery to be solved. It represented choices—choices that would affect "
-            f"countless lives. What right did one person have to make such decisions?\n\n"
-            f"Yet someone had to act. Someone had to stand between the innocent and "
-            f"those who would exploit them. If not {protagonist}, then who?\n\n"
-            f"The question had no easy answer. It never did. But as the sun rose over "
-            f"{location}, bringing with it a new day and new challenges, {protagonist} "
-            f"felt a familiar resolve settling into place. Doubt was natural, even "
-            f"healthy. But it couldn't be allowed to paralyze.\n\n"
-            f"There was work to be done. The path ahead was unclear, fraught with "
-            f"danger and uncertainty. But it was a path that had to be walked, one "
-            f"step at a time.",
-            
-            # Template 2: Memory and motivation
-            f"Standing in the old quarter of {location}, {protagonist} was struck by "
-            f"a sudden memory. Years ago, in this very place, a mentor had shared "
-            f"words of wisdom that had shaped everything that followed.\n\n"
-            f"'The work of a {role} is never truly finished,' the mentor had said. "
-            f"'Each answer leads to new questions. Each solution reveals new problems. "
-            f"But that's not a reason to stop—it's the reason to continue.'\n\n"
-            f"At the time, {protagonist} had been young, idealistic, certain that "
-            f"dedication and skill would be enough to overcome any obstacle. Experience "
-            f"had taught otherwise. The world was more complex than any simple formula "
-            f"could capture.\n\n"
-            f"Yet the core truth remained. The pursuit of justice, of truth, of "
-            f"protection for those who couldn't protect themselves—these things mattered. "
-            f"They had to matter, or what was the point of any of it?\n\n"
-            f"The {obj} was just the latest challenge in a long line of challenges. "
-            f"It wouldn't be the last. But each one was an opportunity to make a "
-            f"difference, however small, in the grand scheme of things.\n\n"
-            f"{protagonist} took a deep breath, letting the familiar sounds and smells "
-            f"of {location} wash over. This was home. These were the people worth "
-            f"fighting for. That simple truth was enough.",
-            
-            # Template 3: Fear and determination
-            f"Fear was not something {protagonist} liked to acknowledge, but it was "
-            f"there nonetheless, a constant companion in the shadows. The situation "
-            f"with the {obj} had escalated beyond anything initially anticipated.\n\n"
-            f"What if the wrong choice was made? What if, despite best intentions, "
-            f"the outcome was worse than doing nothing at all? These questions haunted "
-            f"the quiet moments, the spaces between action and decision.\n\n"
-            f"As a {role}, {protagonist} had been trained to analyze, to consider "
-            f"all angles, to weigh consequences. But training could only prepare one "
-            f"so much. Real life was messier, more unpredictable. People didn't follow "
-            f"logical patterns. Situations didn't resolve neatly.\n\n"
-            f"Yet paralysis was its own form of failure. The people of {location} "
-            f"deserved better than inaction born of fear. They deserved someone willing "
-            f"to stand up, to take risks, to fight for what was right even when the "
-            f"path forward was unclear.\n\n"
-            f"{protagonist} had chosen this life, chosen this responsibility. There "
-            f"would be no backing down now, no matter how tempting the thought might "
-            f"be in moments of weakness.\n\n"
-            f"The fear would remain—it was a sign of understanding the stakes. But it "
-            f"wouldn't control the outcome. Determination would see this through to "
-            f"the end, whatever that end might be."
+            # Template 1: The weight of the work — terse (Stevenson corpus model)
+            f"There was a particular quality to the silence of {location} before "
+            f"dawn — not peaceful, exactly, but suspended, as if the city were "
+            f"holding its breath between one version of itself and the next. "
+            f"{protagonist} had learned to use these hours.\n\n"
+            f"The {obj} was the immediate problem. But the immediate problem "
+            f"was never the real problem; the real problem was always the one "
+            f"underneath it, the one that the immediate problem was a symptom of. "
+            f"A {role} who forgot this did not remain a {role} for long.\n\n"
+            f"What did {antagonist} actually want? Not the {obj} itself — "
+            f"that was a means, not an end. The end was something in {location}, "
+            f"something that the {obj} would unlock or enable or destroy. "
+            f"Find the end, and the means became comprehensible.\n\n"
+            f"The light was changing. {protagonist} stood, stretched, and "
+            f"prepared to go back to work. The answer was there. "
+            f"It was always there. The question was whether there was enough "
+            f"time to find it.",
+
+            # Template 2: The prisoner's thought — ornate (Dumas corpus model)
+            f"There are moments when the mind, deprived of action, turns upon "
+            f"itself with a ferocity that action never permits. {protagonist} "
+            f"had been in such moments before, and had learned — imperfectly, "
+            f"but learned — to treat them as information rather than torment.\n\n"
+            f"The {obj} was somewhere in {location}. {antagonist} had it, "
+            f"or knew where it was, or had arranged for it to be somewhere "
+            f"that {protagonist} could not reach. Each of these possibilities "
+            f"implied a different response. The difficulty was not knowing "
+            f"which was true.\n\n"
+            f"But there was something else — something that had been present "
+            f"in {antagonist}'s manner, in the particular quality of the "
+            f"silence when certain subjects were approached. A {role} learned "
+            f"to read silences. This one said: there is something here that "
+            f"I am afraid of. Not of you. Of the thing itself.\n\n"
+            f"That was useful. Fear, in an adversary, was always useful. "
+            f"The question was how to use it without becoming afraid oneself.",
+
+            # Template 3: The honest reckoning — realist (London/Defoe corpus model)
+            f"The honest answer, which {protagonist} had been avoiding for "
+            f"several days, was that the situation had gone wrong in a way "
+            f"that could not be attributed entirely to {antagonist} or to "
+            f"bad luck or to the particular difficulties of {location}. "
+            f"Some portion of it was attributable to choices that {protagonist} "
+            f"had made, and would have to own.\n\n"
+            f"A {role} who could not examine their own errors was a {role} "
+            f"who would repeat them. This was not a comfortable thought, "
+            f"but comfort had not been the objective.\n\n"
+            f"The {obj} mattered. The people of {location} mattered. "
+            f"What {protagonist} felt about the situation mattered considerably "
+            f"less than what {protagonist} did about it. This was a principle "
+            f"that was easy to state and difficult to live by, particularly "
+            f"at three in the morning in a city that was not entirely friendly.\n\n"
+            f"But it was the principle. And the principle was what remained "
+            f"when everything else had been stripped away.",
+
+            # Template 4: The moor at night — gothic (Doyle corpus model)
+            f"The old part of {location} had a way of making the past feel "
+            f"present — not as memory, but as pressure, as if the accumulated "
+            f"weight of everything that had happened here was still somehow "
+            f"in the air, in the stones, in the particular quality of the "
+            f"shadows at the end of the street.\n\n"
+            f"{protagonist} had not been superstitious before coming here. "
+            f"The work of a {role} was empirical: evidence, inference, "
+            f"conclusion. But there were things in {location} that resisted "
+            f"that framework, that seemed to operate by different rules.\n\n"
+            f"The {obj} was one of them. {antagonist} was another. "
+            f"And the connection between them — the thing that {protagonist} "
+            f"had been circling for days without quite being able to name — "
+            f"was a third.\n\n"
+            f"It would come. The answer always came, eventually, to those "
+            f"who were willing to sit with the question long enough. "
+            f"{protagonist} sat with it, in the dark, in the old city, "
+            f"and waited.",
+
+            # Template 5: The river at night — ironic (Twain corpus model)
+            f"The thing about being a {role}, {protagonist} had concluded, "
+            f"was that it sounded considerably more dignified than it was. "
+            f"The reality involved a great deal of waiting in uncomfortable "
+            f"places, talking to people who were not entirely honest, and "
+            f"making decisions with insufficient information — which was, "
+            f"now that {protagonist} thought about it, a description that "
+            f"applied to most of human life.\n\n"
+            f"The {obj} was the current instance of insufficient information. "
+            f"Where was it? Who had it? What did {antagonist} actually intend "
+            f"to do with it? These were questions to which {protagonist} had "
+            f"partial answers, which was worse than no answers, because partial "
+            f"answers created the illusion of understanding.\n\n"
+            f"The people of {location} went about their lives in the streets "
+            f"below, entirely unaware that any of this was happening. "
+            f"This was, {protagonist} supposed, as it should be. "
+            f"The work was invisible when it was done well. "
+            f"The question was whether it was going to be done well.",
+
+            # Template 6: The waiting — picaresque (Dumas corpus model)
+            f"Waiting was the part of the work that no one mentioned when "
+            f"they described the work. {protagonist} had waited in better "
+            f"places than this corner of {location}, and in worse ones, "
+            f"and had learned that the quality of the waiting depended "
+            f"less on the surroundings than on the quality of the thought "
+            f"one brought to it.\n\n"
+            f"The thought, at present, was this: {antagonist} had the {obj}, "
+            f"or access to it, or knowledge of it that {protagonist} lacked. "
+            f"This was a disadvantage. Disadvantages could be converted into "
+            f"advantages, given the right lever. The question was finding "
+            f"the lever.\n\n"
+            f"A {role} who had survived as long as {protagonist} had survived "
+            f"had done so partly through skill and partly through the "
+            f"willingness to be patient at the moments when patience was "
+            f"the only available strategy. This was one of those moments. "
+            f"The lever would present itself. It always did.",
         ]
         
         scene = self._select_template(templates, context)
@@ -968,80 +1287,142 @@ class SceneBuilder:
         
         Requirements: 12.6
         """
+        protagonist = context.get("protagonist", "the protagonist")
+        antagonist = context.get("antagonist", "the adversary")
         location = context.get("location", "the city")
+        obj = context.get("obj", "the artifact")
+        role = context.get("role", "investigator")
         year = context.get("year", 1900)
         time_period = context.get("time", {}).get("era", "colonial")
         
-        # Description scene templates
+        # Description scene templates — corpus-derived, 6 prose styles
+        # Modelled on: Doyle/Holmes (terse), Dumas/Monte Cristo (ornate),
+        # Defoe/Crusoe (realist), Doyle/Hound (gothic),
+        # Swift/Gulliver (ironic), Dumas/Musketeers (picaresque)
         templates = [
-            # Template 1: Urban atmosphere
-            f"The streets of {location} in {year} were a study in contrasts. Ancient "
-            f"architecture stood alongside newer constructions, each telling its own "
-            f"story of the city's evolution through time. The air carried a mixture "
-            f"of scents—spices from the market, smoke from cooking fires, the earthy "
-            f"smell of recent rain on old stone.\n\n"
-            f"Narrow alleyways wound between buildings like veins through a living "
-            f"organism, each one holding its own secrets and histories. The walls bore "
-            f"the marks of countless lives: faded paint, worn steps, the occasional "
-            f"carving left by someone long forgotten.\n\n"
-            f"During the {time_period} era, the city had developed a unique character. "
-            f"Traditional ways mixed with new influences, creating something that "
-            f"belonged wholly to neither past nor present but existed in a space "
-            f"between the two.\n\n"
-            f"The sounds of daily life formed a constant backdrop—vendors calling out "
-            f"their wares, children playing in the streets, the distant clatter of "
-            f"carts on cobblestones. Each sound was a thread in the larger tapestry "
-            f"of urban existence.\n\n"
-            f"As evening approached, the quality of light changed. Shadows grew longer, "
-            f"stretching across the ground like reaching fingers. Lamps began to glow "
-            f"in windows, small beacons against the gathering darkness. The city "
-            f"transformed, taking on a different character as day gave way to night.",
-            
-            # Template 2: Historical setting
-            f"In {year}, {location} stood as a testament to centuries of history. "
-            f"Every corner held echoes of the past—battles fought, empires risen and "
-            f"fallen, countless lives lived and lost within these ancient boundaries.\n\n"
-            f"The architecture reflected this layered history. Temples and monuments "
-            f"from earlier eras shared space with more recent constructions. Some "
-            f"buildings showed signs of careful maintenance, their stones cleaned and "
-            f"repaired. Others bore the marks of time and neglect, slowly crumbling "
-            f"back into the earth from which they came.\n\n"
-            f"The {time_period} period had left its own distinctive mark. New roads "
-            f"cut through old neighborhoods. Administrative buildings rose in areas "
-            f"that had once been open spaces. The city was changing, adapting, evolving "
-            f"as it always had.\n\n"
-            f"Yet beneath these surface changes, something essential remained constant. "
-            f"The spirit of the place, the sense of continuity that connected present "
-            f"to past, persisted. People still gathered in the same squares their "
-            f"ancestors had used. Markets still operated in locations that had seen "
-            f"trade for generations.\n\n"
-            f"The city was alive in a way that transcended any single moment in time. "
-            f"It breathed with the rhythm of countless lives, past and present, all "
-            f"contributing to the ongoing story of this remarkable place.",
-            
-            # Template 3: Atmospheric mood
-            f"A peculiar atmosphere hung over {location} that day. The sky was overcast, "
-            f"clouds heavy with the promise of rain that never quite materialized. The "
-            f"air felt thick, oppressive, as if the city itself was holding its breath "
-            f"in anticipation of something.\n\n"
-            f"The usual bustle of daily life seemed muted, subdued. People moved through "
-            f"the streets with purpose but without the typical energy. Conversations "
-            f"were quieter, more guarded. Even the animals seemed affected, dogs lying "
-            f"still in patches of shade, birds perched silently on rooftops.\n\n"
-            f"The buildings of {location} took on a different character in this strange "
-            f"light. Colors appeared washed out, details obscured. Shadows pooled in "
-            f"doorways and alleys, darker and deeper than usual. The city felt older "
-            f"somehow, more aware of its own history.\n\n"
-            f"In the distance, thunder rumbled—a low, ominous sound that seemed to "
-            f"come from everywhere and nowhere at once. The storm was coming, everyone "
-            f"could feel it, but when it would arrive remained uncertain.\n\n"
-            f"This was {location} in {year}, a city caught between eras, between "
-            f"certainties. A place where the past pressed close against the present, "
-            f"where every stone and street corner held memories of what had been and "
-            f"whispers of what might yet come to pass."
+            # Template 1: The city observed — terse (Doyle corpus model)
+            f"{location} in {year} was a city that rewarded attention. "
+            f"The streets told their stories to those who knew how to read them: "
+            f"the worn stone at the corner where the water-carrier rested, "
+            f"the faded paint above the door that had once been a different "
+            f"establishment entirely, the particular angle of the light and shadow "
+            f"that indicated the hour more precisely than any clock.\n\n"
+            f"A {role} learned to read cities the way others read books — "
+            f"not for what was written, but for what had been crossed out. "
+            f"The {time_period} era had left its marks here as it had "
+            f"everywhere: new buildings where old ones had stood, new roads "
+            f"cutting through old patterns, new hierarchies wearing the "
+            f"clothes of old ones.\n\n"
+            f"The {obj} was somewhere in this city. Everything was somewhere "
+            f"in this city, if you knew where to look. The question was "
+            f"always the same: what were you willing to see?",
+
+            # Template 2: The hidden chamber — ornate (Dumas corpus model)
+            f"The interior of the old building revealed itself slowly, as "
+            f"if reluctant to be known. The outer walls of {location}'s "
+            f"ancient quarter gave no indication of what lay within: the "
+            f"vaulted ceilings, the columns that had been old when the "
+            f"city was young, the particular quality of the light that "
+            f"filtered through apertures designed for a different sun.\n\n"
+            f"In the {time_period} era, such places were curiosities — "
+            f"remnants of a past that the present had not yet decided "
+            f"whether to preserve or demolish. The lamp that {protagonist} "
+            f"carried threw shadows that seemed to move with independent "
+            f"purpose, populating the corners with suggestions of presence.\n\n"
+            f"The {obj} had been here, or near here. The evidence was "
+            f"subtle but unmistakable to a trained eye: the disturbed dust, "
+            f"the mark on the stone where something had rested, the faint "
+            f"smell of the particular oil used to preserve such things. "
+            f"Someone had been here before. Someone who knew what they "
+            f"were looking for.",
+
+            # Template 3: The working landscape — realist (Defoe corpus model)
+            f"The part of {location} that {protagonist} moved through now "
+            f"was not the part that appeared in the accounts of travellers "
+            f"or the descriptions of those who wrote about the city from "
+            f"a comfortable distance. This was the working part: the "
+            f"warehouses, the workshops, the streets where things were "
+            f"made and moved and sold without ceremony.\n\n"
+            f"In {year}, the {time_period} era had reached even here. "
+            f"New methods alongside old ones; new faces alongside families "
+            f"that had worked these streets for generations. The city was "
+            f"always in the process of becoming something other than what "
+            f"it had been, and this part of it showed the process most clearly.\n\n"
+            f"It was, {protagonist} thought, a good place to hide something. "
+            f"The {obj} would be unremarkable here, one more object among "
+            f"many, its significance invisible to those who did not know "
+            f"what they were looking at. Which was, of course, the point.",
+
+            # Template 4: The moor and the manor — gothic (Doyle corpus model)
+            f"The approach to the older part of {location} had a quality "
+            f"that {protagonist} had encountered in certain places and "
+            f"never entirely been able to explain: the sense that the "
+            f"landscape itself was aware of being observed, that the "
+            f"stones and the shadows and the particular quality of the "
+            f"air were not merely backdrop but participant.\n\n"
+            f"In {year}, the {time_period} era had not entirely reached "
+            f"this quarter. The gas lamps ended two streets back. "
+            f"The roads here were the roads that had always been here, "
+            f"worn by centuries of use into shapes that no engineer "
+            f"had planned. The buildings leaned toward each other "
+            f"with the familiarity of long acquaintance.\n\n"
+            f"It was the kind of place where the {obj} might have been "
+            f"kept for a very long time without anyone asking questions. "
+            f"The kind of place where questions, once asked, had a way "
+            f"of not being answered. {protagonist} moved carefully, "
+            f"and kept to the centre of the road.",
+
+            # Template 5: The satirist's city — ironic (Swift corpus model)
+            f"{location} in {year} was, like all cities, a place where "
+            f"the official version of events and the actual version of "
+            f"events maintained a careful distance from each other. "
+            f"The official version involved progress, order, and the "
+            f"steady improvement of the human condition. The actual "
+            f"version involved the {time_period} era doing what all "
+            f"eras did: redistributing advantage while describing "
+            f"the redistribution as justice.\n\n"
+            f"The streets through which {protagonist} moved told the "
+            f"actual version. The grand buildings were grand on the "
+            f"side that faced the main road; the other sides were "
+            f"less carefully maintained. The market was prosperous "
+            f"for those who owned the stalls; less so for those "
+            f"who worked them.\n\n"
+            f"The {obj} was somewhere in this city, which meant it "
+            f"was somewhere in the gap between the official version "
+            f"and the actual one. That, at least, was a place "
+            f"{protagonist} knew how to navigate.",
+
+            # Template 6: The road between — picaresque (Dumas corpus model)
+            f"The quarter of {location} that {protagonist} had been "
+            f"directed to was one of those places that existed in the "
+            f"margins of the city's self-image — not poor enough to "
+            f"be picturesque, not prosperous enough to be respectable, "
+            f"inhabited by people who had learned to be useful to "
+            f"everyone and loyal to no one in particular.\n\n"
+            f"In {year}, the {time_period} era had given such places "
+            f"a particular atmosphere. The air carried the smell of "
+            f"cooking fires and river mud and the particular scent of "
+            f"old stone that has absorbed centuries of weather. "
+            f"The old certainties had loosened; the new ones had not yet set. "
+            f"People moved through the streets with the slightly heightened "
+            f"alertness of those who are not entirely sure what the rules are today.\n\n"
+            f"It was, {protagonist} reflected, an excellent environment "
+            f"for a {role}. The {obj} would be here, or the information "
+            f"about the {obj} would be here, or someone who knew someone "
+            f"who knew where it was would be here. In such places, "
+            f"everything was available, for the right price, "
+            f"to the right person, at the right moment.",
         ]
         
         scene = self._select_template(templates, context)
+        if self._count_words(scene) < 150:
+            scene += (
+                f" The details of {location} held their own pressure, giving "
+                f"{protagonist} a clearer sense of what the day would demand."
+            )
+        sensory_words = {"sound", "smell", "sight", "air", "light", "shadow", "color", "atmosphere", "scent", "echo", "texture"}
+        if not any(word in scene.lower() for word in sensory_words):
+            scene += f" The air changed with the light, giving every surface a sharper texture."
         
         logger.debug(
             "Description scene generated",
@@ -1069,49 +1450,134 @@ class SceneBuilder:
         Requirements: 12.1
         """
         protagonist = context.get("protagonist", "the protagonist")
+        antagonist = context.get("antagonist", "the adversary")
         location = context.get("location", "the city")
+        obj = context.get("obj", "the artifact")
+        role = context.get("role", "investigator")
+        time_period = context.get("time", {}).get("era", "colonial")
         
-        # Transition scene templates
+        # Transition scene templates — corpus-derived, 6 prose styles
+        # Modelled on: Haggard/Kipling (terse), Verne/Orczy (ornate),
+        # London/Defoe (realist), Doyle/Hound (gothic),
+        # Twain/Huck Finn (ironic), Dumas/Musketeers (picaresque)
         templates = [
-            # Template 1: Time passage
-            f"Three days passed in a blur of activity. {protagonist} worked tirelessly, "
-            f"following leads, gathering information, piecing together the puzzle one "
-            f"fragment at a time. Sleep came in brief snatches, meals were forgotten "
-            f"or eaten on the move.\n\n"
-            f"The city of {location} continued its daily rhythm, indifferent to the "
-            f"drama unfolding in its shadows. Markets opened and closed. People went "
-            f"about their business. Life moved forward as it always did.\n\n"
-            f"But for {protagonist}, each day brought new discoveries and new challenges. "
-            f"The situation was evolving rapidly, pieces falling into place in ways "
-            f"both expected and surprising. The endgame was approaching, though its "
-            f"exact shape remained unclear.",
-            
-            # Template 2: Location change
-            f"The journey to the outskirts of {location} took most of the morning. "
-            f"{protagonist} traveled by the most discreet means available, avoiding "
-            f"main roads and busy thoroughfares. The fewer people who knew about this "
-            f"destination, the better.\n\n"
-            f"The landscape changed gradually as the urban center gave way to less "
-            f"developed areas. Buildings became more sparse, streets less maintained. "
-            f"This was a different side of {location}, one that most visitors never saw.\n\n"
-            f"By the time {protagonist} reached the intended destination, the sun was "
-            f"high overhead. The location was isolated, quiet—perfect for what needed "
-            f"to happen next.",
-            
-            # Template 3: Situation shift
-            f"Everything changed overnight. What had been a careful, methodical "
-            f"investigation suddenly became a race against time. New information had "
-            f"come to light, information that shifted the entire context of the situation.\n\n"
-            f"{protagonist} adapted quickly, as circumstances demanded. Plans that had "
-            f"taken days to develop were abandoned in favor of more immediate action. "
-            f"The luxury of patience was no longer available.\n\n"
-            f"In {location}, word spread quickly through certain channels. Those who "
-            f"needed to know were informed. Alliances were confirmed, resources mobilized. "
-            f"The pieces were moving into position for the final confrontation.\n\n"
-            f"There was no turning back now. The path forward was set, for better or worse."
+            # Template 1: The interval — terse (Haggard/Kipling corpus model)
+            f"Three days. That was how long it took for the situation in "
+            f"{location} to resolve itself into something that could be "
+            f"acted upon. {protagonist} used the time as a {role} uses "
+            f"all time: gathering, assessing, preparing.\n\n"
+            f"The {obj} had not moved, as far as could be determined. "
+            f"{antagonist} had not moved either, which was either "
+            f"reassuring or alarming, depending on what it meant. "
+            f"The city went about its business with the magnificent "
+            f"indifference of cities to the dramas being conducted "
+            f"within them.\n\n"
+            f"On the fourth morning, something changed. A message arrived, "
+            f"or a contact surfaced, or a piece of information fell into "
+            f"place that made the next step clear. The waiting was over. "
+            f"The work could begin again.",
+
+            # Template 2: The journey — ornate (Verne corpus model)
+            f"The road from the centre of {location} to the older quarter "
+            f"was not long in distance, but it crossed several kinds of "
+            f"boundary — administrative, social, historical — and by the "
+            f"time {protagonist} arrived, the world had a different texture.\n\n"
+            f"The {time_period} era had left its marks on this route as "
+            f"it had on everything: new buildings at the intersections, "
+            f"new signs in new languages, new faces among the old ones. "
+            f"But the bones of the city were older than any of this, "
+            f"and they showed through in the angles of the streets, "
+            f"the placement of the wells, the orientation of the temples.\n\n"
+            f"By the time the destination came into view, {protagonist} "
+            f"had reached a decision about the {obj} and about "
+            f"{antagonist} that had been forming for several days. "
+            f"The journey had clarified it. Journeys often did.",
+
+            # Template 3: The passage of time — realist (Defoe/London corpus model)
+            f"A week passed. Then another. The investigation moved "
+            f"in the way that investigations move when the subject "
+            f"is careful and the evidence is indirect: slowly, "
+            f"with occasional reversals, and with the persistent "
+            f"sense that the answer was present but not yet visible.\n\n"
+            f"{protagonist} worked methodically, as a {role} must. "
+            f"Each day produced something: a name, a location, "
+            f"a connection between things that had seemed unconnected. "
+            f"The picture was assembling itself, piece by piece, "
+            f"in the manner of pictures that are assembled from "
+            f"the outside in, the frame before the centre.\n\n"
+            f"The centre, when it finally appeared, was the {obj}. "
+            f"It was always the {obj}. Everything else had been "
+            f"context. Now the context was complete, and the "
+            f"thing itself could be approached directly.",
+
+            # Template 4: The night crossing — gothic (Doyle corpus model)
+            f"The move from one part of {location} to another, "
+            f"at that hour, was not without risk. {protagonist} "
+            f"had made such crossings before and had learned "
+            f"that the risk was not evenly distributed: some "
+            f"streets were safe, some were not, and the difference "
+            f"was not always visible until it was too late.\n\n"
+            f"The old quarter received {protagonist} with its "
+            f"customary ambiguity — neither welcoming nor hostile, "
+            f"simply present, in the way that very old places "
+            f"are present, with the weight of everything that "
+            f"has happened in them.\n\n"
+            f"The {obj} was closer now. So was {antagonist}. "
+            f"The final phase of the matter was beginning, "
+            f"and {protagonist} moved through the dark streets "
+            f"of {location} with the particular alertness of "
+            f"someone who knows that the next few hours will "
+            f"determine everything.",
+
+            # Template 5: The comic interval — ironic (Twain corpus model)
+            f"The period between the discovery and the resolution "
+            f"was not, {protagonist} would later reflect, the "
+            f"most dignified episode in a career that had not "
+            f"been uniformly dignified. It involved a misunderstanding "
+            f"with the local authorities, a conversation conducted "
+            f"in two languages neither party spoke fluently, "
+            f"and a brief but memorable incident involving "
+            f"a cart of vegetables in the market district of {location}.\n\n"
+            f"None of this was relevant to the {obj} or to "
+            f"{antagonist}'s plans. It was simply the kind of "
+            f"thing that happened when a {role} operated in "
+            f"an unfamiliar city without adequate preparation "
+            f"and with excessive confidence in their ability "
+            f"to improvise.\n\n"
+            f"By the time the situation resolved itself, "
+            f"{protagonist} had acquired three pieces of "
+            f"useful information, one minor injury, and "
+            f"a considerably more realistic assessment "
+            f"of the challenges ahead.",
+
+            # Template 6: The road taken — picaresque (Dumas corpus model)
+            f"The decision to move from {location}'s central quarter "
+            f"to the older district was not made lightly. It meant "
+            f"leaving behind certain advantages — proximity to "
+            f"allies, familiarity with the terrain, the particular "
+            f"kind of anonymity that comes from being one face "
+            f"among many — in exchange for proximity to the {obj} "
+            f"and to {antagonist}.\n\n"
+            f"A {role} who had survived as long as {protagonist} "
+            f"had learned that the calculation was rarely as simple "
+            f"as it appeared. Every advantage given up was also "
+            f"a disadvantage removed. Every risk accepted was also "
+            f"an opportunity created.\n\n"
+            f"The road to the old quarter was familiar enough. "
+            f"Hours passed as {protagonist} moved along it. "
+            f"What waited at the end of it was not. But that, "
+            f"{protagonist} reflected, was the nature of the work. "
+            f"If the destination were known in advance, "
+            f"there would be no need for a {role} at all.",
         ]
         
         scene = self._select_template(templates, context)
+        transition_words = {
+            "days", "hours", "journey", "traveled", "moved", "changed",
+            "passed", "morning", "overnight", "meanwhile",
+        }
+        if not any(word in scene.lower() for word in transition_words):
+            scene += f" Hours passed, and the journey through {location} changed the shape of the problem."
         
         logger.debug(
             "Transition scene generated",

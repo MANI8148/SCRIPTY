@@ -107,3 +107,37 @@ class EmotionalArcModel:
     def get_arc_series(self) -> list[ArcPoint]:
         """Return all recorded arc points in order."""
         return list(self._arc_points)
+
+    def current_phase(self) -> str:
+        """Return the current emotional arc phase based on tension curve."""
+        from backend.core.data_models import ArcPhase
+        if not self.tension_curve:
+            return ArcPhase.CALM.value
+        scores = [point[2] for point in self.tension_curve]
+        mean = sum(scores) / len(scores)
+        if len(scores) >= 2:
+            trend = scores[-1] - scores[-2]
+            if trend > 0.1:
+                return ArcPhase.RISING.value
+            if trend < -0.1:
+                return ArcPhase.FALLING.value
+        peak_index = max(range(len(scores)), key=scores.__getitem__) if scores else 0
+        if peak_index == len(scores) - 1 and max(scores) >= 0.65:
+            return ArcPhase.PEAK.value
+        if mean < 0.3 and len(scores) > 2:
+            return ArcPhase.RESOLUTION.value
+        return ArcPhase.CALM.value
+
+    def current_register(self) -> str:
+        """Return narrative register based on current tension."""
+        from backend.core.data_models import Register
+        if not self.tension_curve:
+            return Register.NEUTRAL.value
+        last = self.tension_curve[-1][2]
+        if last >= 0.75:
+            return Register.URGENT.value
+        if last >= 0.5:
+            return Register.FORMAL.value
+        if last <= 0.25:
+            return Register.INTIMATE.value
+        return Register.NEUTRAL.value

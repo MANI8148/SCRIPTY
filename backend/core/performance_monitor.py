@@ -40,6 +40,7 @@ class PerformanceMonitor:
         self.tension_curves: dict[str, list[tuple[int, int, float]]] = defaultdict(list)
         self.system_events: deque[TimedMetric] = deque(maxlen=max_events)
         self.cache_rollups: dict[str, deque[bool]] = defaultdict(lambda: deque(maxlen=1000))
+        self.quality_reports: dict[str, dict[str, float]] = {}
 
     def _now(self) -> float:
         return time.time()
@@ -197,6 +198,15 @@ class PerformanceMonitor:
         if retry_count > 3:
             logger.error("Generation retry threshold exceeded", extra={"story_id": story_id, "retry_count": retry_count})
 
+    def track_quality_metrics(self, story_id: str, metrics: dict[str, Any]) -> None:
+        numeric_metrics: dict[str, float] = {}
+        for key, value in metrics.items():
+            try:
+                numeric_metrics[str(key)] = round(float(value), 6)
+            except (TypeError, ValueError):
+                continue
+        self.quality_reports[story_id] = numeric_metrics
+
     def get_metrics(self) -> dict[str, Any]:
         generation_by_mode: dict[str, list[TimedMetric]] = defaultdict(list)
         for event in self.generations:
@@ -256,6 +266,8 @@ class PerformanceMonitor:
                 "tension_curve": {
                     story_id: curve for story_id, curve in self.tension_curves.items()
                 },
+                "quality": dict(self.quality_reports),
+                "latest_quality": next(reversed(self.quality_reports.values()), None) if self.quality_reports else None,
             },
             "system": {
                 "events": len(self.system_events),

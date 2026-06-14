@@ -127,7 +127,12 @@ class SemanticMemory:
     def store(self, fact: SemanticFact) -> None:
         """Upsert a fact by ``(entity_name, fact_type)`` key."""
         self._facts[(fact.entity_name, fact.fact_type)] = fact
-        self._tfidf_dirty = True  # invalidate cached index
+        # Invalidate cached TF-IDF index so it will be rebuilt on next query.
+        # Also clear vectorizer/matrix so repeated mutations cannot leave stale state.
+        self._tfidf_dirty = True
+        self._tfidf_vectorizer = None
+        self._tfidf_matrix = None
+        self._tfidf_keys = []
 
     def retrieve(self, entity_name: str, fact_type: str) -> Optional[SemanticFact]:
         """Exact lookup by ``(entity_name, fact_type)``."""
@@ -362,10 +367,40 @@ class MemoryManager:
         chapter_num: int,
         active_characters: Optional[list[str]] = None,
         top_k: int = 5,
+        planner: Optional[object] = None,
+        tension_model: Optional[object] = None,
+        ml_predictors: Optional[object] = None,
+        arc_tracker: Optional[object] = None,
     ) -> dict:
         """
         Merge episodic records, semantic facts, and working memory into a
         context dict for chapter generation.
+
+        Parameters
+        ----------
+        chapter_num:
+            The chapter number being assembled.
+        active_characters:
+            List of character names to include in character_states.
+            Defaults to all registered characters.
+        top_k:
+            Maximum number of episodic/semantic records to retrieve.
+        planner:
+            Optional NarrativePlanner instance.  When provided, the
+            ``chapter_plan`` field is populated from
+            ``planner.get_chapter_plan(chapter_num)``.
+        tension_model:
+            Optional TensionSourceModel instance.  When provided, the
+            ``current_tension`` field is populated from
+            ``tension_model.compute_current_tension()``.
+        ml_predictors:
+            Optional ScenePredictor instance.  When provided, the
+            ``ml_scene_predictions`` field is populated from
+            ``ml_predictors.rank_scene_candidates(features)``.
+        arc_tracker:
+            Optional CharacterArcTracker instance.  When provided, each
+            character state entry gains an ``arc_stage`` field from
+            ``arc_tracker.current_stage(name)``.
         """
         context: dict = {}
 
@@ -375,11 +410,23 @@ class MemoryManager:
             for name, rec in self._characters.items()
         }
         chars = active_characters or list(self._characters.keys())
-        context["character_states"] = {
-            name: self.get_character_memory(name).get_character_state(chapter_num)
-            for name in chars
-            if name in self._characters or name in self.character_memories
-        }
+
+        # Build character_states with full arc/goal/emotion/relationship data
+        character_states: dict = {}
+        for name in chars:
+            if name not in self._characters and name not in self.character_memories:
+                continue
+            state = self.get_character_memory(name).get_character_state(chapter_num)
+            # Inject arc_stage from arc_tracker when available
+            if arc_tracker is not None and hasattr(arc_tracker, "current_stage"):
+                arc_stage_val = arc_tracker.current_stage(name)
+                state["arc_stage"] = (
+                    arc_stage_val.value if hasattr(arc_stage_val, "value") else arc_stage_val
+                )
+            else:
+                state["arc_stage"] = None
+            character_states[name] = state
+        context["character_states"] = character_states
 
         # Episodic tier
         if "episodic" in self.disabled_tiers:
@@ -440,6 +487,71 @@ class MemoryManager:
                 "recent_scene_summaries": state.recent_scene_summaries,
             }
 
+        # ----------------------------------------------------------------
+        # Subsystem outputs: chapter_plan, current_tension, ml_scene_predictions
+        # ----------------------------------------------------------------
+
+        # chapter_plan from NarrativePlanner
+        if planner is not None and hasattr(planner, "get_chapter_plan"):
+            try:
+                context["chapter_plan"] = planner.get_chapter_plan(chapter_num)
+            except Exception:
+                logger.warning(
+                    "assemble_chapter_context: planner.get_chapter_plan(%d) failed; "
+                    "chapter_plan set to None",
+                    chapter_num,
+                )
+                context["chapter_plan"] = None
+        else:
+            context["chapter_plan"] = None
+
+        # current_tension from TensionSourceModel
+        if tension_model is not None and hasattr(tension_model, "compute_current_tension"):
+            try:
+                context["current_tension"] = tension_model.compute_current_tension()
+            except Exception:
+                logger.warning(
+                    "assemble_chapter_context: tension_model.compute_current_tension() failed; "
+                    "current_tension set to None"
+                )
+                context["current_tension"] = None
+        else:
+            context["current_tension"] = None
+
+        # ml_scene_predictions from ML predictors
+        if ml_predictors is not None and hasattr(ml_predictors, "rank_scene_candidates"):
+            try:
+                # Build a minimal feature dict from available context
+                wm = context.get("working_memory") or {}
+                recent_summaries = wm.get("recent_scene_summaries", [])
+                features: dict = {
+                    "chapter_num": chapter_num,
+                    "tension": context.get("current_tension") or 0.0,
+                    "previous_scene_type": recent_summaries[0] if recent_summaries else "",
+                }
+                context["ml_scene_predictions"] = ml_predictors.rank_scene_candidates(features)
+            except Exception:
+                logger.warning(
+                    "assemble_chapter_context: ml_predictors.rank_scene_candidates() failed; "
+                    "ml_scene_predictions set to {}"
+                )
+                context["ml_scene_predictions"] = {}
+        else:
+            context["ml_scene_predictions"] = {}
+ 
+        # ------------------------------------------------------------------
+        # Decision provider outputs (Phase 2)
+        # ------------------------------------------------------------------
+        context["memory_decisions"] = {
+            "callbacks": context.get("episodic_records", [])[-2:] if context.get("episodic_records") else [],
+            "action_deltas": [
+                f"scene tension delta from {self.working.current_tension:.2f}"
+            ] if self.working.current_tension > 0.0 else [],
+            "conflict_resolution": [
+                f"tension resolved from {self.working.current_tension:.2f}"
+            ] if self.working.current_tension < 0.4 and len(self.working) > 2 else [],
+        }
+ 
         return context
 
     # ------------------------------------------------------------------
@@ -532,15 +644,28 @@ class MemoryManager:
     def deserialize(cls, path: str) -> "MemoryManager":
         """Restore a MemoryManager from a JSONL file written by ``serialize``."""
         manager = cls()
-        for line in Path(path).read_text(encoding="utf-8").splitlines():
+        text = Path(path).read_text(encoding="utf-8")
+        for line in text.splitlines():
             if not line.strip():
                 continue
-            obj = json.loads(line)
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("deserialize: skipping invalid json line")
+                continue
+
+            if not isinstance(obj, dict):
+                logger.warning("deserialize: expected object, got %s", type(obj))
+                continue
+
             tier = obj.get("tier")
             records = obj.get("records", [])
 
             if tier == "characters":
                 for r in records:
+                    if not all(k in r for k in ("name", "role")):
+                        logger.warning("deserialize: malformed character record %s", r)
+                        continue
                     manager.register_character(
                         r["name"],
                         r["role"],
@@ -549,6 +674,9 @@ class MemoryManager:
                     )
             elif tier == "episodic":
                 for r in records:
+                    if not all(k in r for k in ("chapter_num", "scene_num", "event")):
+                        logger.warning("deserialize: malformed episodic record %s", r)
+                        continue
                     manager.episodic.append(
                         EpisodicRecord(
                             chapter_num=r["chapter_num"],
@@ -561,6 +689,9 @@ class MemoryManager:
                     )
             elif tier == "semantic":
                 for r in records:
+                    if not all(k in r for k in ("entity_name", "fact_type", "value")):
+                        logger.warning("deserialize: malformed semantic record %s", r)
+                        continue
                     manager.semantic.store(
                         SemanticFact(
                             entity_name=r["entity_name"],

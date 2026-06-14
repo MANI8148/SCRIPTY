@@ -94,6 +94,8 @@ class CacheLayer:
                 self._redis_url,
                 max_connections=_POOL_MAX_CONNECTIONS,
                 decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
             )
             client = redis.Redis(connection_pool=pool)
             # Verify connectivity with a lightweight PING
@@ -104,12 +106,21 @@ class CacheLayer:
                 "Redis connected",
                 extra={"extra_fields": {"redis_url": self._redis_url}},
             )
-        except Exception as exc:  # noqa: BLE001
+        except ModuleNotFoundError as exc:
+            # Redis package not installed; fall back to memory
             self._redis = None
             self._redis_available = False
-            logger.warning(
-                "Redis unavailable, falling back to in-memory cache: %s", exc
-            )
+            logger.warning("redis package not installed; using in-memory cache: %s", exc)
+        except redis.exceptions.RedisError as exc:  # type: ignore[attr-defined]
+            # Connection/command errors from redis client
+            self._redis = None
+            self._redis_available = False
+            logger.warning("Redis connection failed; using in-memory cache: %s", exc)
+        except Exception as exc:
+            # Unexpected errors — log and fall back
+            self._redis = None
+            self._redis_available = False
+            logger.warning("Unexpected error connecting to Redis; using in-memory cache: %s", exc)
 
     def _execute_with_retry(self, operation, *args, **kwargs):
         """
@@ -134,21 +145,38 @@ class CacheLayer:
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 self._redis_errors += 1
+                # If redis client raises a redis.exceptions.RedisError, log at debug
+                try:
+                    import redis as _redis_lib  # type: ignore
+                    is_redis_error = isinstance(exc, _redis_lib.exceptions.RedisError)
+                except Exception:
+                    is_redis_error = False
+
                 if attempt < _MAX_RETRIES - 1:
                     backoff_s = _RETRY_BACKOFF_MS[attempt] / 1000.0
-                    logger.warning(
-                        "Redis operation failed (attempt %d/%d), retrying in %.0fms: %s",
-                        attempt + 1,
-                        _MAX_RETRIES,
-                        _RETRY_BACKOFF_MS[attempt],
-                        exc,
-                    )
+                    if is_redis_error:
+                        logger.debug(
+                            "Redis operation transient error (attempt %d/%d), retrying in %.0fms: %s",
+                            attempt + 1,
+                            _MAX_RETRIES,
+                            _RETRY_BACKOFF_MS[attempt],
+                            exc,
+                        )
+                    else:
+                        logger.warning(
+                            "Redis operation failed (attempt %d/%d), retrying in %.0fms: %s",
+                            attempt + 1,
+                            _MAX_RETRIES,
+                            _RETRY_BACKOFF_MS[attempt],
+                            exc,
+                        )
                     time.sleep(backoff_s)
 
         # All retries exhausted
         logger.error(
             "Redis operation failed after %d retries: %s", _MAX_RETRIES, last_exc
         )
+        # mark redis unavailable so subsequent calls will use fallback
         self._redis_available = False
         return None
 
@@ -382,13 +410,14 @@ class CacheLayer:
                         cursor=cursor, match=namespaced_pattern, count=100
                     )
                     if keys:
+                        # Delete returns number of keys removed
                         deleted = self._execute_with_retry(self._redis.delete, *keys)
-                        if deleted:
+                        if isinstance(deleted, int) and deleted:
                             removed += deleted
                     if cursor == 0:
                         break
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Redis SCAN failed during invalidate_pattern: %s", exc)
+                logger.warning("Redis SCAN failed during invalidate_pattern; falling back to memory-only pattern delete: %s", exc)
 
         if self._fallback_to_memory:
             removed += self._memory_delete_pattern(namespaced_pattern)

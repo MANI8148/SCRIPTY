@@ -1,0 +1,108 @@
+[
+  {
+    "source_text": "The sun set over the horizon. The sun set over the horizon.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["The sun set over the horizon.", "The sun set over the horizon."]
+      ],
+      "unique_texts": [],
+      "should_pass": true
+    },
+    "rationale": "Exact duplicate sentence appearing twice should be flagged as a duplicate pair."
+  },
+  {
+    "source_text": "She walked quickly. She walked quickly!",
+    "expected_output": {
+      "duplicate_groups": [
+        ["She walked quickly.", "She walked quickly!"]
+      ],
+      "unique_texts": [],
+      "should_pass": true
+    },
+    "rationale": "Near-identical texts differing only by punctuation should be detected as duplicates."
+  },
+  {
+    "source_text": "Hello world. Hello  world.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["Hello world.", "Hello  world."]
+      ],
+      "unique_texts": [],
+      "should_pass": true
+    },
+    "rationale": "Same text content with different whitespace should be treated as duplicates."
+  },
+  {
+    "source_text": "Repeat. Repeat. Repeat.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["Repeat.", "Repeat.", "Repeat."]
+      ],
+      "unique_texts": [],
+      "should_pass": true
+    },
+    "rationale": "Three identical fragments should form a single group of three duplicates."
+  },
+  {
+    "source_text": "The cat sat on the mat. The dog ran in the park.",
+    "expected_output": {
+      "duplicate_groups": [],
+      "unique_texts": ["The cat sat on the mat.", "The dog ran in the park."],
+      "should_pass": true
+    },
+    "rationale": "Two completely different fragments share no text and should not be flagged as duplicates."
+  },
+  {
+    "source_text": "Once upon a time. Once upon a time. There was a dragon.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["Once upon a time.", "Once upon a time."]
+      ],
+      "unique_texts": ["There was a dragon."],
+      "should_pass": true
+    },
+    "rationale": "One duplicate pair and one unique fragment; both should be correctly identified."
+  },
+  {
+    "source_text": "Go! Go! Stop. Halt.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["Go!", "Go!"]
+      ],
+      "unique_texts": ["Stop.", "Halt."],
+      "should_pass": true
+    },
+    "rationale": "Multiple duplicate pairs ('Go!') and unique items ('Stop.', 'Halt.') in the same batch."
+  },
+  {
+    "source_text": "Hi. Hi.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["Hi.", "Hi."]
+      ],
+      "unique_texts": [],
+      "should_pass": true
+    },
+    "rationale": "Very short text that coincidentally matches another; should still be flagged as duplicate."
+  },
+  {
+    "source_text": "Hello. HELLO.",
+    "expected_output": {
+      "duplicate_groups": [
+        ["Hello.", "HELLO."]
+      ],
+      "unique_texts": [],
+      "should_pass": true
+    },
+    "rationale": "Case-insensitive duplicate detection: 'Hello.' and 'HELLO.' should match."
+  },
+  {
+    "source_text": "Alpha. Beta. Gamma. Delta.",
+    "expected_output": {
+      "duplicate_groups": [],
+      "unique_texts": ["Alpha.", "Beta.", "Gamma.", "Delta."],
+      "should_pass": true
+    },
+    "rationale": "All unique fragments — no duplicates should be flagged."
+  }
+]

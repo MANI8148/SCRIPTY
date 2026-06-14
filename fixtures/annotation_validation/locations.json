@@ -1,0 +1,110 @@
+[
+  {
+    "source_text": "They arrived in Mumbai by train",
+    "expected_output": {
+      "locations": ["Mumbai"],
+      "rejected": [],
+      "should_pass": true
+    },
+    "rationale": "'Mumbai' is a clear city name and should be extracted as a location."
+  },
+  {
+    "source_text": "The house stood at the end of the lane",
+    "expected_output": {
+      "locations": ["lane"],
+      "rejected": ["House"],
+      "should_pass": true
+    },
+    "rationale": "'House' is a generic noun and should be rejected unless it is a proper name; 'lane' is a location."
+  },
+  {
+    "source_text": "Age had weathered the stone",
+    "expected_output": {
+      "locations": [],
+      "rejected": ["Age"],
+      "should_pass": true
+    },
+    "rationale": "'Age' refers to time, not a place; must be rejected as a non-location."
+  },
+  {
+    "source_text": "The Victorian Era was known for its architecture",
+    "expected_output": {
+      "locations": [],
+      "rejected": ["Era"],
+      "should_pass": true
+    },
+    "rationale": "'Era' is a time period, not a location; must be rejected."
+  },
+  {
+    "source_text": "Day broke over the mountains",
+    "expected_output": {
+      "locations": ["mountains"],
+      "rejected": ["Day"],
+      "should_pass": true
+    },
+    "rationale": "'Day' is a time reference and should be rejected; 'mountains' is a valid location."
+  },
+  {
+    "source_text": "Summer was their favourite season",
+    "expected_output": {
+      "locations": [],
+      "rejected": ["Summer"],
+      "should_pass": true
+    },
+    "rationale": "'Summer' is a season, not a location; must be rejected."
+  },
+  {
+    "source_text": "They walked through the forest",
+    "expected_output": {
+      "locations": ["forest"],
+      "rejected": [],
+      "should_pass": true
+    },
+    "rationale": "'Forest' is a geographic location and should be extracted."
+  },
+  {
+    "source_text": "The diner on Elm Street was packed",
+    "expected_output": {
+      "locations": ["diner", "Elm Street"],
+      "rejected": [],
+      "should_pass": true
+    },
+    "rationale": "Both 'diner' (establishment) and 'Elm Street' (named road) are valid locations."
+  },
+  {
+    "source_text": "Age is just a number",
+    "expected_output": {
+      "locations": [],
+      "rejected": ["Age"],
+      "should_pass": true
+    },
+    "rationale": "'Age' in a proverb context is abstract, not a location; must be rejected."
+  },
+  {
+    "source_text": "The Old House pub was crowded",
+    "expected_output": {
+      "locations": ["pub"],
+      "rejected": [],
+      "should_pass": true
+    },
+    "rationale": "'The Old House' is part of the pub's name; 'pub' is the location entity. Standalone 'House' would be rejected."
+  },
+  {
+    "source_text": "That summer in Paris changed everything",
+    "expected_output": {
+      "locations": ["Paris"],
+      "rejected": ["summer"],
+      "should_pass": true
+    },
+    "rationale": "'Paris' is a valid location; 'summer' appears but is a season, not a location, and should be rejected."
+  },
+  {
+    "source_text": "He lived on Baker Street",
+    "expected_output": {
+      "locations": ["Baker Street"],
+      "rejected": [],
+      "should_pass": true
+    },
+    "rationale": "'Baker Street' is a named thoroughfare and should be extracted as a location."
+  }
+]

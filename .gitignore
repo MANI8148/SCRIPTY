@@ -14,11 +14,14 @@
 .venv/
 venv/
 ENV/
+*.env
 
 # Python generated files
 __pycache__/
 **/__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 *$py.class
 .pytest_cache/
 .hypothesis/
@@ -28,39 +31,233 @@ htmlcov/
 .ruff_cache/
 .pyre/
 
-# Runtime/cache output
-backend/cache_data/
-backend/runtime/
-backend/logs/
+# Runtime / logs / cache
 *.log
+backend/logs/
+backend/runtime/
+backend/cache_data/
+backend/.cache/
+.cache/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
 
 # Local agent/task artifacts
 AGENTS.md
 .kiro/
-docs/completions/
 STORY_GENERATION_REPORT.md
 story_system_updated.txt
+
+# Research experiments / one-off analysis scripts
+backend/research/ablation_study.py
+backend/research/advanced_evaluation_suite.py
+backend/research/agent_evaluation.py
+backend/research/agent_scene_adapter.py
+backend/research/architecture_reduction.py
+backend/research/automated_judge.py
+backend/research/baseline_comparison.py
+backend/research/character_agent.py
+backend/research/character_agent_v2_design.md
+backend/research/character_state_enforcer.py
+backend/research/character_state_engine.py
+backend/research/context_ablation.py
+backend/research/control_efficiency.py
+backend/research/cost_performance.py
+backend/research/counterfactual_tests.py
+backend/research/demo_structured_scene_update.py
+backend/research/diversity_audit.py
+backend/research/emotion_model.py
+backend/research/evaluate_demo.py
+backend/research/evaluation_validation.py
+backend/research/event_centric_retrieval.py
+backend/research/failure_analysis.py
+backend/research/failure_reduction.py
+backend/research/final_research_report.py
+backend/research/generalization_benchmark.py
+backend/research/generation_attribution.py
+backend/research/goal_evaluator.py
+backend/research/graph_planner_adapter.py
+backend/research/graph_query_layer.py
+backend/research/human_evaluation.py
+backend/research/human_evaluation_manager.py
+backend/research/influence_tracer.py
+backend/research/interference_investigation.py
+backend/research/long_horizon_benchmark.py
+backend/research/long_horizon_validation.py
+backend/research/memory_compression_layer.py
+backend/research/memory_importance_decay.py
+backend/research/multi_llm_validation.py
+backend/research/narrative_thread_tracker.py
+backend/research/phase10_experiments.py
+backend/research/phase11_benchmark.py
+backend/research/phase12_runner.py
+backend/research/phase12_truth_report.py
+backend/research/phase13_benchmark.py
+backend/research/phase13_optimization_report.py
+backend/research/phase13_runner.py
+backend/research/phase14_runner.py
+backend/research/predictor_aware_retrieval.py
+backend/research/prompt_budget_optimizer.py
+backend/research/regression_suite.py
+backend/research/relationship_model.py
+backend/research/research_figures.py
+backend/research/retrieval_usefulness.py
+backend/research/scene_update_extractor.py
+backend/research/scripty_api.py
+backend/research/scripty_benchmark.py
+backend/research/scripty_studio.py
+backend/research/scripty_v2_roadmap.py
+backend/research/significance_analysis.py
+backend/research/statistical_framework.py
+backend/research/story_bible_graph.py
+backend/research/story_engine_validation.py
+backend/research/stress_test.py
+backend/research/structured_memory_system.py
+backend/research/structured_scene_update_extractor.py
+backend/research/test_phase11_components.py
+backend/research/test_phase12_components.py
+backend/research/test_phase13_components.py
+backend/research/test_phase14_components.py
+backend/research/test_structured_scene_update_extractor.py
+backend/research/thread_objective_converter.py
+backend/research/thread_verification.py
+backend/research/train_models.py
+backend/research/v1_benchmark.py
+
+# Scripts directory
+backend/scripts/
+
+# Duplicate / extraneous docs
+README.txt
+backend/SCRIPTY_V2_ARCHITECTURE.md
+backend/__init__.py
+
+# Test bug exploration files
+backend/core/test_bug_condition_exploration.py
+
+# Ad-hoc scripts and eval files
+test.py
+test_timeout.py
+simple_eval.py
+text_metrics.py
+parse_junit.py
+generate_metric_suite.py
+scripty_catalog_expansion.py
+trace_imports.py
+project_overview.json
+notebooks/train_ngram.ipynb
+
+# Private / generated config files
+backend/studio_data.json
+backend/studio_data/
+
+# Internal docs not for public distribution
+docs/character_agent_architecture.md
+docs/narrative_knowledge_graph_report.md
+project_docs/
+backend/research/character_agent_v2_design.md
+
+# Claude AI config / not for distribution
+frontend/scripty-studio/CLAUDE.md
+
+# Scripts / tools / internal utilities
+scripts/
+tools/
+
+# v2 engine internal artifacts (benchmarks, reports, training experiments)
+backend/v2/audit_reports/
+backend/v2/benchmark_*.json
+backend/v2/benchmark_character.py
+backend/v2/benchmark_hwse.py
+backend/v2/benchmark_memory.py
+backend/v2/REALIZER_REDESIGN.md
+backend/v2/*.md
+backend/v2/*.json
+backend/v2/generate.py
+backend/v2/narrative_quality_*.py
+backend/v2/validation_audit.py
+backend/v2/generators/comparison_runner.py
+backend/v2/generators/train_kaggle.py
+backend/v2/generators/train_mlx.py
+backend/v2/generators/train_parallel.py
+
+# Data pipeline temp / cache files
+data_pipeline/cache/
+data_pipeline/batch_1.txt
 
 # Research/generated data artifacts
 backend/data_raw/
 backend/data_clean/
 backend/data_passages/
 backend/data_entities/
-backend/data/dataset_manifest.jsonl
 backend/research_output/
 reports/
+*.jsonl.tmp
 
-# Notebook checkpoints
-.ipynb_checkpoints/
-**/.ipynb_checkpoints/
+data/gutenberg/
 
-# Build/package output
+# Build / packaging
 build/
 dist/
 *.egg-info/
 
-# Local database/output files
+# Local databases
 *.sqlite
 *.sqlite3
 *.db
-*.jsonl.tmp
+
+# Optional generated summary artifacts
+docs/COMPLETION_SUMMARY.md
+
+# Additional Virtual Environments
+.venv*/
+
+# Execution and Output Artifacts
+evaluation_log.txt
+evaluation_output/
+output_portfolio/
+present_architecture.html
+results.csv
+results.json
+results.txt
+trace.log
+metric_suite.json
+import_trace.txt
+test_sample.txt
+opencode.json
+adversarial_examples.json
+scripty_expand_state.json
+corpus_audit.md
+
+# Additional Directories
+.opencode/
+rebuild/
+scratch/
+
+# Large directories and datasets
+models/
+dataset/
+data/
+data_pipeline/output*/
+frontend/**/.next/
+frontend/**/node_modules/
+frontend/**/build/
+
+# Large file extensions
+*.faiss
+*.pkl
+*.sst
+*.dylib
+*.so
+*.dll
+*.pt
+*.pth
+*.onnx
+
+# Secrets
+*.pem
+*.key
+*id_rsa*
+*.p12
+.npmrc

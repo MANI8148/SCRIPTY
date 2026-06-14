@@ -1,0 +1,110 @@
+[
+  {
+    "source_text": "He was furious, his face red with rage",
+    "expected_output": {
+      "emotion": "anger",
+      "intensity": 0.9,
+      "should_pass": true
+    },
+    "rationale": "Clear anger cues: 'furious' and 'rage' indicate high-intensity anger."
+  },
+  {
+    "source_text": "She celebrated her anniversary with joy",
+    "expected_output": {
+      "emotion": "joy",
+      "intensity": 0.7,
+      "should_pass": true
+    },
+    "rationale": "'Celebrated' and 'joy' indicate positive emotion at medium-high intensity."
+  },
+  {
+    "source_text": "The news maddened him beyond reason",
+    "expected_output": {
+      "emotion": "anger",
+      "intensity": 0.85,
+      "should_pass": true
+    },
+    "rationale": "'Maddened' is a strong anger signal; should not be confused with joy or surprise."
+  },
+  {
+    "source_text": "Tears streamed down her face as she grieved",
+    "expected_output": {
+      "emotion": "sadness",
+      "intensity": 0.8,
+      "should_pass": true
+    },
+    "rationale": "'Tears' and 'grieved' are clear indicators of sadness at high intensity."
+  },
+  {
+    "source_text": "He felt a wave of guilt wash over him",
+    "expected_output": {
+      "emotion": "guilt",
+      "intensity": 0.6,
+      "should_pass": true
+    },
+    "rationale": "Direct mention of 'guilt' with moderate intensity from 'wave' imagery."
+  },
+  {
+    "source_text": "She was terrified of the dark",
+    "expected_output": {
+      "emotion": "fear",
+      "intensity": 0.75,
+      "should_pass": true
+    },
+    "rationale": "'Terrified' is a direct fear signal with substantial intensity."
+  },
+  {
+    "source_text": "A hint of jealousy crept into his voice",
+    "expected_output": {
+      "emotion": "jealousy",
+      "intensity": 0.35,
+      "should_pass": true
+    },
+    "rationale": "Low-intensity jealousy indicated by 'a hint of jealousy' and 'crept'."
+  },
+  {
+    "source_text": "They were hopeful about the future",
+    "expected_output": {
+      "emotion": "hope",
+      "intensity": 0.65,
+      "should_pass": true
+    },
+    "rationale": "Direct keyword 'hopeful' signals hope at moderate intensity."
+  },
+  {
+    "source_text": "He felt deeply ashamed of what he'd done",
+    "expected_output": {
+      "emotion": "shame",
+      "intensity": 0.85,
+      "should_pass": true
+    },
+    "rationale": "'Deeply ashamed' directly indicates high-intensity shame."
+  },
+  {
+    "source_text": "She was desperate, frantic, searching everywhere",
+    "expected_output": {
+      "emotion": "desperation",
+      "intensity": 0.8,
+      "should_pass": true
+    },
+    "rationale": "'Desperate' and 'frantic' are strong signals for desperation at high intensity."
+  },
+  {
+    "source_text": "He celebrated his victory",
+    "expected_output": {
+      "emotion": "guilt",
+      "intensity": 0.0,
+      "should_pass": false
+    },
+    "rationale": "Obvious mismatch: 'celebrated' and 'victory' indicate joy or pride, not guilt."
+  },
+  {
+    "source_text": "She was maddened by the delay",
+    "expected_output": {
+      "emotion": "joy",
+      "intensity": 0.0,
+      "should_pass": false
+    },
+    "rationale": "Obvious mismatch: 'maddened' indicates anger or frustration, not joy."
+  }
+]

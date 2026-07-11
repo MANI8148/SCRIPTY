@@ -122,9 +122,11 @@ class StoryEngineV2:
                 try:
                     model_path = os.path.join(_project, "models", "ngram_5gram.pkl")
                     model_path_full = os.path.join(_project, "models", "ngram_5gram_full.pkl")
+                    model_path_8 = os.path.join(_project, "models", "ngram_8gram.pkl")
                     ngram = None
-                    # Try each candidate; skip corrupt/truncated pickle files
-                    for cand in (model_path, model_path_full):
+                    # Try each candidate; skip corrupt/truncated pickle files.
+                    # 8-gram is preferred when present (higher-order coherence).
+                    for cand in (model_path_8, model_path, model_path_full):
                         if os.path.exists(cand):
                             try:
                                 ngram = NGramGenerator.load(cand)

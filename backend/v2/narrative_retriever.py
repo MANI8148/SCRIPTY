@@ -258,6 +258,8 @@ class NarrativeRetriever:
             tone="neutral",
             infrastructure=[],
             transport=[],
+            location_description="unknown",
+            year=2000,
         )
         return retriever.retrieve(dummy_obj, dummy_world, memories)
 

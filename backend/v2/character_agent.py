@@ -310,6 +310,10 @@ class CharacterAgent:
         conflicts = world_context.get("active_conflicts", [])
         if isinstance(conflicts, list) and len(conflicts) > 2:
             pressure += 0.2
-        if memories and any("danger" in m.lower() for m in memories):
-            pressure += 0.3
+        if memories:
+            for m in memories:
+                text = m.text if hasattr(m, 'text') else str(m)
+                if "danger" in text.lower():
+                    pressure += 0.3
+                    break
         return min(1.0, pressure)

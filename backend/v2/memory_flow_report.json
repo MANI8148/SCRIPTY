@@ -1,0 +1,29 @@
+[
+  {
+    "scene": 1,
+    "episodic_added": 1,
+    "semantic_added": 8,
+    "interpretations_added": 2,
+    "consequences_added": 6,
+    "relationship_deltas_added": 4,
+    "callbacks_added": 3
+  },
+  {
+    "scene": 2,
+    "episodic_added": 2,
+    "semantic_added": 8,
+    "interpretations_added": 2,
+    "consequences_added": 6,
+    "relationship_deltas_added": 4,
+    "callbacks_added": 3
+  },
+  {
+    "scene": 3,
+    "episodic_added": 3,
+    "semantic_added": 8,
+    "interpretations_added": 2,
+    "consequences_added": 6,
+    "relationship_deltas_added": 4,
+    "callbacks_added": 3
+  }
+]

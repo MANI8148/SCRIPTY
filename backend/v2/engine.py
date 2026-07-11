@@ -8,6 +8,7 @@ from backend.v2.config import get_generation_backend, get_hwse_mode, is_hwse_ena
 from backend.v2.dramatic_realizer import DramaticRealizer
 from backend.v2.generators.base import TextGenerator
 from backend.v2.generators.hybrid_generator import HybridGenerator
+from backend.v2.generators.voice_adapter import VoiceAdapter
 from backend.v2.generators.ngram_generator import NGramGenerator
 from backend.v2.conflict_resolver import ConflictResolver
 from backend.v2.factories import build_character_agents
@@ -24,9 +25,12 @@ from backend.v2.types import (
     GenerationRequest,
     GenerationResult,
     StoryMode,
+    StoryPlan,
     WorldConstraints,
 )
+from backend.v2.world_engine.world_engine import WorldEngine
 from backend.v2.world_state import WorldState
+from backend.v2.arc_planner.arc_planner import ArcPlanner
 
 _FRAGMENTS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -56,8 +60,10 @@ class StoryEngineV2:
     def __init__(
         self,
         world_state: WorldState | None = None,
+        world_engine: WorldEngine | None = None,
         memory: MemorySystem | None = None,
         planner: StoryPlanner | None = None,
+        arc_planner: "ArcPlanner | None" = None,
         conflict_resolver: ConflictResolver | None = None,
         realizer: DramaticRealizer | None = None,
         generator: TextGenerator | None = None,
@@ -70,10 +76,12 @@ class StoryEngineV2:
         if enable_hwse is None:
             enable_hwse = is_hwse_enabled()
 
-        self.world_state = world_state or WorldState()
+        self.world_engine = world_engine or WorldEngine()
+        self.world_state = world_state or self.world_engine
         self.rag_bridge = RAGBridge()
-        self.memory = memory or MemorySystem(rag_bridge=self.rag_bridge)
+        self.memory = memory or MemorySystem()
         self.planner = planner or StoryPlanner(rag_bridge=self.rag_bridge)
+        self.arc_planner = arc_planner or ArcPlanner(self.planner)
         self.conflict_resolver = conflict_resolver or ConflictResolver()
         self.realizer = realizer or DramaticRealizer()
         self.state_updater = state_updater or StateUpdater()
@@ -113,9 +121,20 @@ class StoryEngineV2:
             elif backend == "hybrid":
                 try:
                     model_path = os.path.join(_project, "models", "ngram_5gram.pkl")
-                    if os.path.exists(model_path):
-                        ngram = NGramGenerator.load(model_path)
-                    else:
+                    model_path_full = os.path.join(_project, "models", "ngram_5gram_full.pkl")
+                    ngram = None
+                    # Try each candidate; skip corrupt/truncated pickle files
+                    for cand in (model_path, model_path_full):
+                        if os.path.exists(cand):
+                            try:
+                                ngram = NGramGenerator.load(cand)
+                                print(f"Loaded n-gram model from {cand}")
+                                break
+                            except Exception as load_err:
+                                print(f"Skipping corrupt model {cand}: {load_err}")
+                                ngram = None
+                    if ngram is None:
+                        # Train a small on-the-fly model if no valid model exists
                         ngram = NGramGenerator(order=5, temperature=0.85)
                         from backend.v2.generators.corpus_loader import CorpusLoader
                         loader = CorpusLoader(
@@ -123,8 +142,15 @@ class StoryEngineV2:
                         )
                         sentences = loader.iter_sentences(max_files=10)
                         ngram.train(sentences)
+                        # Persist so subsequent runs are fast
+                        try:
+                            ngram.save(model_path)
+                            print(f"Saved on-the-fly model to {model_path}")
+                        except Exception:
+                            pass
                     self.generator = HybridGenerator(
                         ngram_generator=ngram,
+                        voice_adapter=VoiceAdapter(),
                         mode="hybrid",
                         temperature=0.85,
                     )
@@ -147,24 +173,26 @@ class StoryEngineV2:
     ) -> GenerationResult:
         start = time.monotonic()
 
-        world = await self.world_state.build_constraints(
-            location=request.location,
-            year=request.year,
-            location_type=request.location_type,
-        )
+        # Propagate generation mode into MemorySystem so mode-aware lazy
+        # subsystems initialize correctly:
+        #   SHORT   -> episodic + semantic only
+        #   CHAPTER -> + belief subsystem
+        #   BOOK    -> full stack (all 5 lazy subsystems)
+        self.memory.mode = request.story_mode.value.upper()
+
+        world = await self.world_engine.build(request)
 
         agents = self._init_agents(request, world)
 
         # Register agents with pipeline for voice-aware dialogue
         self.pipeline.set_agents(agents)
 
-        chapter_count = self._resolve_chapter_count(request)
+        plan = self.arc_planner.plan(request, world)
         chapters: list[GeneratedChapter] = []
 
-        for chapter_num in range(1, chapter_count + 1):
+        for chapter_arc in plan.chapters:
             chapter = await self._generate_chapter(
-                chapter_num=chapter_num,
-                chapter_count=chapter_count,
+                chapter_arc=chapter_arc,
                 agents=agents,
                 world=world,
                 request=request,
@@ -311,19 +339,13 @@ class StoryEngineV2:
 
     async def _generate_chapter(
         self,
-        chapter_num: int,
-        chapter_count: int,
+        chapter_arc: "ChapterArc",
         agents: list[CharacterAgent],
         world: WorldConstraints,
         request: GenerationRequest,
     ) -> GeneratedChapter:
-        objectives = self.planner.plan_chapter(
-            chapter_num=chapter_num,
-            total_chapters=chapter_count,
-            world=world,
-            story_mode=request.story_mode,
-            character_count=len(agents),
-        )
+        chapter_num = chapter_arc.chapter_num
+        objectives = chapter_arc.objectives
         scene_count = len(objectives)
         scenes: list[GeneratedScene] = []
 

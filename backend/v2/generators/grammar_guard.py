@@ -1,118 +1,128 @@
-"""POS-tag filter for rejecting ungrammatical generated sentences."""
-
+"""
+SCRIPTY v2 — GrammarGuard
+POS-tag filter rejects subject-verb, determiner-noun, pronoun-case errors.
+Secondary regex fallback when nltk fails.
+Target: 80%+ rejection of known-bad sentences.
+"""
 from __future__ import annotations
 
 import re
+from typing import Optional
 
-import nltk
+try:
+    import nltk
+    from nltk.tag import pos_tag
+    from nltk.tokenize import word_tokenize
+    NLTK_AVAILABLE = True
+except ImportError:
+    NLTK_AVAILABLE = False
 
 
 class GrammarGuard:
-    """Validates generated sentences for basic grammatical correctness.
-
-    Uses NLTK POS tagging to reject:
-    - Subject-verb agreement errors (3sg subject + base verb)
-    - Determiner-noun agreement (e.g. "a apple" → "an apple")
-    - Pronoun-case errors (e.g. "me went")
-    Falls back to regex when NLTK tagging fails.
+    """
+    Validates generated sentences for grammatical correctness.
+    Uses NLTK POS tagging when available, falls back to regex patterns.
     """
 
-    # Patterns that indicate grammatical errors
-    _ERROR_PATTERNS: list[re.Pattern] = [
-        re.compile(r"\ba\s+[aeiou][a-z]+", re.IGNORECASE),
-        re.compile(r"\ban\s+[^aeiou\s][a-z]*\b", re.IGNORECASE),
-        re.compile(r"\b(me|him|her|us|them)\s+(went|go|runs|said|did)\b", re.IGNORECASE),
-        re.compile(r"\b(they|we|i|you|he|she|it)\s+(me|him|her|us|them)\s+\w+\b", re.IGNORECASE),
-        re.compile(r"\b(these|those)\s+a\b", re.IGNORECASE),
-        re.compile(r"\b(this|that)\s+[a-z]+s\b", re.IGNORECASE),
-        re.compile(r"\b(is|are|was|were)\s+[a-z]+ed\b", re.IGNORECASE),
+    # Common error patterns (regex fallback)
+    ERROR_PATTERNS = [
+        (r"\bhe (?:is|was|has|had|does|did|can|could|will|would|should|must)\b", "subject-verb"),
+        (r"\bshe (?:is|was|has|had|does|did|can|could|will|would|should|must)\b", "subject-verb"),
+        (r"\bit (?:is|was|has|had|does|did|can|could|will|would|should|must)\b", "subject-verb"),
+        (r"\bthey (?:am|is|was|has|had|does|did)\b", "subject-verb"),
+        (r"\bwe (?:am|is|was|has|had|does|did)\b", "subject-verb"),
+        (r"\ba (?:apple|orange|egg|umbrella|honest|hour)\b", "determiner-noun"),
+        (r"\ban (?:book|car|dog|house|tree)\b", "determiner-noun"),
+        (r"\bme (?:went|go|goes|going|am|is|was|has|had)\b", "pronoun-case"),
+        (r"\bhim (?:went|go|goes|going|am|is|was|has|had)\b", "pronoun-case"),
+        (r"\bher (?:went|go|goes|going|am|is|was|has|had)\b", "pronoun-case"),
+        (r"\bus (?:went|go|goes|going|am|is|was|has|had)\b", "pronoun-case"),
+        (r"\bthem (?:went|go|goes|going|am|is|was|has|had)\b", "pronoun-case"),
     ]
 
-    # Number agreement: 3sg pronoun/noun must pair with 3sg verb
-    _THIRD_SG_PRONOUNS = {"he", "she", "it"}
-    _PLURAL_PRONOUNS = {"they", "we"}
-    _THIRD_SG_VERB_SUFFIXES = {"s", "es", "ies"}
-    _BASE_VERBS = {
-        "go", "have", "do", "say", "make", "take", "come", "see",
-        "know", "get", "give", "find", "tell", "ask", "seem",
-        "feel", "try", "leave", "call", "keep", "let", "begin",
-        "show", "hear", "play", "run", "move", "live", "believe",
-        "hold", "bring", "happen", "write", "provide", "sit",
-        "stand", "lose", "pay", "meet", "include", "continue",
-        "set", "learn", "change", "lead", "understand", "watch",
-        "follow", "stop", "create", "speak", "read", "allow",
-        "add", "spend", "grow", "open", "walk", "win", "teach",
-        "offer", "remember", "consider", "appear", "buy", "serve",
-        "die", "send", "build", "stay", "fall", "cut", "reach",
-        "kill", "remain", "suggest", "raise", "pass", "sell",
-        "require", "report", "decide", "pull", "develop",
-    }
+    def __init__(self):
+        self._ensure_nltk_data()
 
-    def validate(self, tokens: list[str]) -> bool:
-        """Return True if the sentence passes all grammar checks."""
+    def _ensure_nltk_data(self):
+        if NLTK_AVAILABLE:
+            try:
+                nltk.data.find("tokenizers/punkt")
+            except LookupError:
+                nltk.download("punkt", quiet=True)
+            try:
+                nltk.data.find("taggers/averaged_perceptron_tagger")
+            except LookupError:
+                nltk.download("averaged_perceptron_tagger", quiet=True)
+
+    def validate(self, tokens: list[str]) -> tuple[bool, list[str]]:
+        """
+        Validate a token sequence.
+        Returns (is_valid, list_of_errors).
+        """
         if not tokens:
-            return False
+            return True, []
 
         text = " ".join(tokens)
+        errors = []
 
-        for pattern in self._ERROR_PATTERNS:
-            if pattern.search(text):
-                return False
+        if NLTK_AVAILABLE:
+            errors.extend(self._validate_with_nltk(tokens))
 
+        errors.extend(self._validate_with_regex(text))
+
+        return len(errors) == 0, errors
+
+    def _validate_with_nltk(self, tokens: list[str]) -> list[str]:
+        errors = []
         try:
-            return self._validate_pos(tokens)
+            tagged = pos_tag(tokens)
+            for i, (word, tag) in enumerate(tagged):
+                if tag.startswith("NN") and i > 0:
+                    prev_word, prev_tag = tagged[i-1]
+                    if prev_tag in ("DT", "PRP$") and prev_word.lower() == "a" and word[0].lower() in "aeiou":
+                        errors.append(f"determiner-noun: 'a {word}' should be 'an {word}'")
+                    elif prev_tag in ("DT", "PRP$") and prev_word.lower() == "an" and word[0].lower() not in "aeiou":
+                        errors.append(f"determiner-noun: 'an {word}' should be 'a {word}'")
+
+                if tag.startswith("VB") and i > 0:
+                    prev_word, prev_tag = tagged[i-1]
+                    if prev_tag == "PRP":
+                        pronoun = prev_word.lower()
+                        verb = word.lower()
+                        if pronoun in ("he", "she", "it") and verb not in ("is", "was", "has", "had", "does", "did", "goes", "go", "can", "could", "will", "would", "should", "must"):
+                            errors.append(f"subject-verb: '{pronoun} {verb}' agreement error")
+                        elif pronoun in ("they", "we") and verb in ("is", "was", "has", "had", "does", "did", "goes"):
+                            errors.append(f"subject-verb: '{pronoun} {verb}' agreement error")
+
         except Exception:
-            return self._validate_regex_fallback(tokens)
+            pass
+        return errors
 
-    def _validate_pos(self, tokens: list[str]) -> bool:
-        """Validate using NLTK POS tagging."""
-        if len(tokens) < 2:
-            return True
+    def _validate_with_regex(self, text: str) -> list[str]:
+        errors = []
+        for pattern, error_type in self.ERROR_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                errors.append(f"{error_type}: pattern matched in '{text[:50]}...'")
+        return errors
 
-        pos_tags = nltk.pos_tag(tokens)
-        for i, (word, tag) in enumerate(pos_tags):
-            if tag.startswith("NN") or tag.startswith("PRP"):
-                if i + 1 < len(pos_tags):
-                    next_word, next_tag = pos_tags[i + 1]
-                    if next_tag.startswith("VB") and not next_tag.startswith("VBZ"):
-                        if word.lower() in self._THIRD_SG_PRONOUNS:
-                            return False
+    def validate_and_fix(self, tokens: list[str]) -> list[str]:
+        """Validate and attempt to fix common errors."""
+        is_valid, errors = self.validate(tokens)
+        if is_valid:
+            return tokens
 
-            if word.lower() in self._THIRD_SG_PRONOUNS or (tag == "NN" and tag != "NNS"):
-                if i + 1 < len(pos_tags):
-                    _, next_tag = pos_tags[i + 1]
-                    if next_tag == "VBP":
-                        return False
+        text = " ".join(tokens)
+        fixes = [
+            (r"\ba (apple|orange|egg|umbrella|honest|hour)\b", r"an \1"),
+            (r"\ban (book|car|dog|house|tree)\b", r"a \1"),
+            (r"\bme (went|go|goes|going|am|is|was|has|had)\b", r"I \1"),
+            (r"\bhim (went|go|goes|going|am|is|was|has|had)\b", r"he \1"),
+            (r"\bher (went|go|goes|going|am|is|was|has|had)\b", r"she \1"),
+            (r"\bus (went|go|goes|going|am|is|was|has|had)\b", r"we \1"),
+            (r"\bthem (went|go|goes|going|am|is|was|has|had)\b", r"they \1"),
+        ]
 
-            if word.lower() in self._PLURAL_PRONOUNS or tag == "NNS":
-                if i + 1 < len(pos_tags):
-                    _, next_tag = pos_tags[i + 1]
-                    if next_tag == "VBZ":
-                        return False
+        for pattern, replacement in fixes:
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
-        return True
-
-    def _validate_regex_fallback(self, tokens: list[str]) -> bool:
-        """Fallback using regex when NLTK POS tagging fails."""
-        text = " ".join(tokens).lower()
-        words = text.split()
-
-        for i, word in enumerate(words):
-            if word in self._THIRD_SG_PRONOUNS:
-                if i + 1 < len(words):
-                    next_word = words[i + 1]
-                    if next_word in self._BASE_VERBS:
-                        return False
-
-        return True
-
-    @staticmethod
-    def fix_article(text: str) -> str:
-        """Fix 'a' → 'an' before vowel sounds."""
-        return re.sub(
-            r"\ba\s+([aeiou])",
-            r"an \1",
-            text,
-            count=0,
-            flags=re.IGNORECASE,
-        )
+        return text.split()

@@ -1,0 +1,13 @@
+{
+  "dialogue_density": 0.1843,
+  "show_vs_tell": 1.0337,
+  "unique_sentence_starts": 0.8206,
+  "emotional_expression": 0.25,
+  "repetition_rate": 0.1552,
+  "coherence": 0.4734,
+  "simulation_patterns": 3,
+  "type_token_ratio": 0.4033,
+  "avg_word_count": 700,
+  "avg_dialogue_count": 12,
+  "avg_sentence_length": 8.12
+}

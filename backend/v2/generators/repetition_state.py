@@ -1,93 +1,101 @@
-"""Token-level repetition tracking across scenes.
-
-Prevents the generator from repeating the same phrases, dialogue lines,
-body language descriptions, and sentence openings within a configurable
-window.
 """
-
+SCRIPTY v2 — RepetitionState
+Token-level dedup across scenes.
+Tracks: dialogue lines, body-language phrases, sentence starts, scene openings.
+Window-based tracking (configurable, default 100 tokens).
+"""
 from __future__ import annotations
 
-import re
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from typing import Any
 
-from collections import deque
 
-
+@dataclass
 class RepetitionState:
-    """Tracks recently used tokens across narrative categories.
-
-    Each category maintains a sliding window of recent tokens.
-    `is_repeated()` returns True if a new token would duplicate
-    content within the window.
-
-    Categories: dialogue, body_language, emotion, action, opening
     """
+    Tracks repetitions across multiple categories with sliding windows.
+    Used by HybridGenerator to avoid repetitive prose.
+    """
+    window_size: int = 100
 
-    def __init__(self, window: int = 100) -> None:
-        self.window = window
-        self._history: dict[str, deque[str]] = {
-            "dialogue": deque(maxlen=window),
-            "body_language": deque(maxlen=window),
-            "emotion": deque(maxlen=window),
-            "action": deque(maxlen=window),
-            "opening": deque(maxlen=window),
-        }
+    dialogue_lines: deque[str] = field(default_factory=lambda: deque(maxlen=100))
+    body_language: deque[str] = field(default_factory=lambda: deque(maxlen=100))
+    sentence_starts: deque[str] = field(default_factory=lambda: deque(maxlen=100))
+    scene_openings: deque[str] = field(default_factory=lambda: deque(maxlen=20))
 
-    def is_repeated(self, text: str, category: str = "dialogue") -> bool:
-        """Check if text (or significant substring) appears in category history."""
-        normalized = self._normalize(text)
-        if len(normalized) < 5:
+    _token_buffer: deque[str] = field(default_factory=lambda: deque(maxlen=100))
+
+    def track(self, tokens: list[str], category: str = "general") -> None:
+        """Add tokens to tracking buffers."""
+        self._token_buffer.extend(tokens)
+
+        text = " ".join(tokens).strip()
+
+        if category == "dialogue" or ("\"" in text or '"' in text):
+            self.dialogue_lines.append(text[:200])
+
+        body_patterns = ["nodded", "smiled", "frowned", "shook", "gestured", "turned", "looked", "glanced"]
+        if any(p in text.lower() for p in body_patterns):
+            self.body_language.append(text[:200])
+
+        if tokens:
+            start = " ".join(tokens[:3])
+            self.sentence_starts.append(start)
+
+    def is_repetitive(self, tokens: list[str], category: str = "general", threshold: float = 0.7) -> bool:
+        """Check if tokens would be repetitive."""
+        if not tokens:
             return False
 
-        history = self._history.get(category)
-        if history is None:
-            return False
+        text = " ".join(tokens).strip()
+        start = " ".join(tokens[:3])
 
-        for entry in history:
-            if self._overlap_ratio(normalized, entry) > 0.7:
+        if category == "dialogue" or ("\"" in text or '"' in text):
+            for existing in self.dialogue_lines:
+                if self._similarity(text, existing) > threshold:
+                    return True
+
+        if any(p in text.lower() for p in ["nodded", "smiled", "frowned", "shook", "gestured", "turned", "looked", "glanced"]):
+            for existing in self.body_language:
+                if self._similarity(text, existing) > threshold:
+                    return True
+
+        for existing in self.sentence_starts:
+            if self._similarity(start, existing) > threshold:
                 return True
+
         return False
 
-    def track(self, text: str, category: str = "dialogue") -> None:
-        """Add text to the category history."""
-        history = self._history.get(category)
-        if history is None:
-            return
-        history.append(self._normalize(text))
-
-    def fresh_dialogue(self, text: str) -> bool:
-        """Check dialogue line freshness."""
-        return not self.is_repeated(text, "dialogue")
-
-    def fresh_body_language(self, text: str) -> bool:
-        """Check body language freshness."""
-        return not self.is_repeated(text, "body_language")
-
-    def fresh_opening(self, text: str) -> bool:
-        """Check sentence/phrase opening freshness."""
-        return not self.is_repeated(text, "opening")
-
-    def clear(self) -> None:
-        for d in self._history.values():
-            d.clear()
-
-    def stats(self) -> dict[str, int]:
-        return {k: len(v) for k, v in self._history.items()}
-
-    def _normalize(self, text: str) -> str:
-        text = text.lower().strip()
-        text = re.sub(r"[^a-z0-9\s]", "", text)
-        return text
-
-    def _overlap_ratio(self, a: str, b: str) -> float:
-        """Compute bigram overlap ratio between two strings."""
-        a_bigrams = set(self._bigrams(a))
-        b_bigrams = set(self._bigrams(b))
-        if not a_bigrams or not b_bigrams:
+    def _similarity(self, a: str, b: str) -> float:
+        """Simple word-overlap similarity."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
             return 0.0
-        intersection = a_bigrams & b_bigrams
-        return len(intersection) / max(len(a_bigrams), len(b_bigrams))
+        intersection = words_a & words_b
+        union = words_a | words_b
+        return len(intersection) / len(union)
 
-    @staticmethod
-    def _bigrams(text: str) -> list[str]:
-        words = text.split()
-        return [" ".join(words[i : i + 2]) for i in range(len(words) - 1)]
+    def get_recent_starts(self, n: int = 5) -> list[str]:
+        """Get recent sentence starts for variation checking."""
+        return list(self.sentence_starts)[-n:]
+
+    def clear_category(self, category: str) -> None:
+        """Clear a specific tracking category."""
+        if category == "dialogue":
+            self.dialogue_lines.clear()
+        elif category == "body_language":
+            self.body_language.clear()
+        elif category == "sentence_starts":
+            self.sentence_starts.clear()
+        elif category == "scene_openings":
+            self.scene_openings.clear()
+
+    def reset(self) -> None:
+        """Reset all tracking."""
+        self.dialogue_lines.clear()
+        self.body_language.clear()
+        self.sentence_starts.clear()
+        self.scene_openings.clear()
+        self._token_buffer.clear()

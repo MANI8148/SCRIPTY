@@ -1,264 +1,267 @@
+"""
+SCRIPTY v2 — MemorySystem
+Multi-tier memory with lazy loading by generation mode.
+"""
 from __future__ import annotations
 
-import json
+import random
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, Optional
 
-from backend.v2.memory_callback import CallbackScheduler
-from backend.v2.memory_consequence import ConsequenceEngine, ConsequenceEntry, ConsequenceStore
-from backend.v2.memory_emotional import EmotionalRetrievalEngine
-from backend.v2.memory_interpretation import InterpretationEngine, InterpretationEntry, InterpretationStore
-from backend.v2.memory_relationship import RelationshipDelta, RelationshipDeltaStore, RelationshipDeltaTracker
-from backend.v2.rag_bridge import RAGBridge
 from backend.v2.types import (
     CharacterBeliefs,
-    ConsequenceEntry,
-    InterpretationEntry,
-    MemoryEntry,
-    MemoryQuery,
-    RelationKind,
-    RelationshipDelta,
-    ScheduledCallback,
+    MemoryEntry, MemoryBundle, MemoryQuery, SceneBlueprint, AgentState, CharacterRecord
 )
 
 
+class ConsequenceEngine:
+    """Tracks action success rates per character."""
+    def __init__(self):
+        self._attempts: dict[str, list[bool]] = {}
+
+    def record(self, character: str, success: bool):
+        self._attempts.setdefault(character, []).append(success)
+
+    def success_rate(self, character: str) -> float:
+        attempts = self._attempts.get(character, [])
+        if not attempts:
+            return 0.5
+        return sum(attempts) / len(attempts)
+
+
 @dataclass
-class EpisodicStore:
-    records: list[MemoryEntry] = field(default_factory=list)
+class EpisodicMemory:
+    entries: list[MemoryEntry] = field(default_factory=list)
+    max_size: int = 1000
 
-    def add(self, entry: MemoryEntry) -> None:
-        self.records.append(entry)
+    def add(self, entry: MemoryEntry):
+        self.entries.append(entry)
+        if len(self.entries) > self.max_size:
+            self.entries = self.entries[-self.max_size:]
 
-    def query(self, character: str, top_k: int = 5) -> list[MemoryEntry]:
-        relevant = [r for r in self.records if character in r.characters]
-        relevant.sort(key=lambda r: r.relevance_score, reverse=True)
-        return relevant[:top_k]
+    def recent(self, character: str, window: int = 3) -> list[MemoryEntry]:
+        char_entries = [e for e in self.entries if e.character == character]
+        return char_entries[-window:]
+
+    def get_by_importance(self, threshold: float = 0.5) -> list[MemoryEntry]:
+        return [e for e in self.entries if e.importance >= threshold]
 
 
 @dataclass
-class SemanticStore:
-    facts: list[MemoryEntry] = field(default_factory=list)
+class SemanticMemory:
+    facts: dict[str, MemoryEntry] = field(default_factory=dict)
 
-    def add(self, entry: MemoryEntry) -> None:
-        self.facts.append(entry)
+    def add_fact(self, key: str, entry: MemoryEntry):
+        self.facts[key] = entry
 
-    def query(self, entity: str) -> list[MemoryEntry]:
-        return [f for f in self.facts if entity.lower() in f.text.lower()]
+    def get_fact(self, key: str) -> Optional[MemoryEntry]:
+        return self.facts.get(key)
+
+    def all_facts(self) -> list[MemoryEntry]:
+        return list(self.facts.values())
+
+
+@dataclass
+class BeliefMemory:
+    beliefs: dict[str, dict[str, MemoryEntry]] = field(default_factory=lambda: defaultdict(dict))
+
+    def add_belief(self, character: str, key: str, entry: MemoryEntry):
+        self.beliefs[character][key] = entry
+
+    def get_beliefs(self, character: str) -> list[MemoryEntry]:
+        return list(self.beliefs.get(character, {}).values())
 
 
 class MemorySystem:
-    """Subjective character knowledge.
-
-    Only the MemorySystem holds what characters know.
-    WorldState holds objective truth — there is no cross-sync.
-
-    Extended with advanced memory modules:
-      - InterpretationMemory: how characters interpret events
-      - ConsequenceMemory: outcomes of character actions
-      - EmotionalRetrieval: emotion-based memory recall
-      - RelationshipDeltaTracker: relationship change history
-      - CallbackScheduler: dramatic timing for memory resurfacing
+    """
+    Multi-tier memory system with mode-aware lazy loading.
+    SHORT: episodic + semantic only
+    CHAPTER: + belief
+    BOOK: full stack (all 9 subtypes)
     """
 
-    def __init__(
-        self,
-        rag_bridge: RAGBridge | None = None,
-        fragments_path: str | None = None,
-    ) -> None:
-        self.episodic = EpisodicStore()
-        self.semantic = SemanticStore()
+    def __init__(self, mode: str = "SHORT"):
+        self.mode = mode.upper()
+        self.episodic = EpisodicMemory()
+        self.semantic = SemanticMemory()
+        self.belief = BeliefMemory()
+        self._character_registry: set[str] = set()
         self._character_beliefs: dict[str, CharacterBeliefs] = {}
-
-        # Advanced memory modules
-        self.interpretation_engine = InterpretationEngine()
         self.consequence_engine = ConsequenceEngine()
-        self.emotional_retrieval = EmotionalRetrievalEngine()
-        self.relationship_deltas = RelationshipDeltaTracker()
-        self.callback_scheduler = CallbackScheduler()
 
-        # RAG bridge — single source for all corpus data
-        self.rag_bridge = rag_bridge
-        if self.rag_bridge is not None:
-            self.rag_bridge.load()
-            # Pre-seed episodic memories from corpus fragments via RAGBridge
-            self._seed_from_rag_bridge()
-        elif fragments_path is not None:
-            # Fallback: direct file read (deprecated path)
-            self._load_fragments(fragments_path)
+        self._lazy_subsystems: dict[str, Any] = {}
+        self._initialized_subsystems = False
 
-    # ------------------------------------------------------------------ #
-    # Fragment seeding from data pipeline output
-    # ------------------------------------------------------------------ #
-
-    def _seed_from_rag_bridge(self) -> None:
-        """Seed episodic memories from RAGBridge fragments (all characters)."""
-        if self.rag_bridge is None or not self.rag_bridge.is_loaded:
-            return
-        fragments = self.rag_bridge.retrieve_fragments(top_k=100)
-        for entry in fragments:
-            self.episodic.add(entry)
-            self.emotional_retrieval.episodic_records.append(entry)
-
-    def _load_fragments(self, path: str) -> None:
-        try:
-            with open(path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    entry = MemoryEntry(
-                        text=data.get("trigger_text", ""),
-                        source="corpus_fragment",
-                        chapter_num=data.get("chapter", 0),
-                        scene_num=data.get("scene", 0),
-                        characters=[data.get("character", "")],
-                        relevance_score=0.6,
-                        emotion_tags=[data.get("emotion", "")] if data.get("emotion") else [],
-                    )
-                    self.episodic.add(entry)
-                    self.emotional_retrieval.episodic_records.append(entry)
-        except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError):
-            pass
-
-    # ------------------------------------------------------------------ #
-    # Basic character management
-    # ------------------------------------------------------------------ #
-
-    def register_character(self, name: str) -> None:
+    def register_character(self, name: str):
+        self._character_registry.add(name)
         if name not in self._character_beliefs:
             self._character_beliefs[name] = CharacterBeliefs()
 
-    def beliefs_for(self, character: str) -> CharacterBeliefs:
-        return self._character_beliefs.setdefault(character, CharacterBeliefs())
+    def _init_lazy_subsystems(self):
+        if self._initialized_subsystems:
+            return
+        if self.mode in ("CHAPTER", "BOOK"):
+            from backend.v2.memory_interpretation import InterpretationMemory
+            from backend.v2.memory_consequence import ConsequenceMemory
+            from backend.v2.memory_emotional import EmotionalRetrieval
+            from backend.v2.memory_relationship import RelationshipDelta
+            from backend.v2.memory_callback import CallbackScheduler
+            self._lazy_subsystems = {
+                "interpretation": InterpretationMemory(),
+                "consequence": ConsequenceMemory(),
+                "emotional": EmotionalRetrieval(),
+                "relationship": RelationshipDelta(),
+                "callback": CallbackScheduler(),
+            }
+        self._initialized_subsystems = True
 
-    # ------------------------------------------------------------------ #
-    # Basic record/store/retrieve (backward compatible)
-    # ------------------------------------------------------------------ #
-
-    def record_event(
-        self,
-        text: str,
-        chapter_num: int,
-        scene_num: int,
-        characters: list[str],
-        relevance_score: float = 0.5,
-        emotion_tags: list[str] | None = None,
-    ) -> None:
-        entry = MemoryEntry(
-            text=text,
-            source="generated",
-            chapter_num=chapter_num,
-            scene_num=scene_num,
-            characters=characters,
-            relevance_score=relevance_score,
-            emotion_tags=emotion_tags or [],
-        )
-        self.episodic.add(entry)
-        # Also keep emotional retrieval in sync
-        self.emotional_retrieval.episodic_records.append(entry)
-
-    def record_fact(
-        self,
-        text: str,
-        chapter_num: int,
-        scene_num: int,
-        characters: list[str],
-    ) -> None:
-        entry = MemoryEntry(
-            text=text,
-            source="semantic",
-            chapter_num=chapter_num,
-            scene_num=scene_num,
-            characters=characters,
-            relevance_score=1.0,
-        )
-        self.semantic.add(entry)
-
-    def store(self, entry: MemoryEntry) -> None:
-        if entry.source == "semantic":
-            self.semantic.add(entry)
-        else:
-            self.episodic.add(entry)
-            # Keep emotional retrieval in sync
-            self.emotional_retrieval.episodic_records = self.episodic.records
-
-    def retrieve(self, query: MemoryQuery, story_mode: str | None = None) -> list[MemoryEntry]:
-        """Retrieve memories for a given query.
-
-        In SHORT mode (story_mode='short'), no chapter filter is applied
-        because all events for a single-chapter story are stored with
-        chapter_num=1 and there is no cross-chapter filtering needed.
-        The EpisodicStore.query() already does not filter by chapter_num,
-        so retrieval works correctly for all modes.
-        """
-        results = self.episodic.query(query.focus_character, query.top_k)
-        entity_facts = self.semantic.query(query.focus_character)
-        seen = {r.text for r in results}
-        for f in entity_facts:
-            if f.text not in seen:
-                results.append(f)
-                seen.add(f.text)
-
-        # Emotion-based retrieval (Change 2)
-        if query.emotion_filter:
-            emotion_memories = self.emotional_retrieval.retrieve_by_emotion(
-                query.emotion_filter, top_k=3
+    def record_scene(self, blueprint: SceneBlueprint, generated_text: str, agent_states: list[AgentState]):
+        for agent in agent_states:
+            entry = MemoryEntry(
+                character=agent.character.name,
+                content=generated_text[:500],
+                scene_num=blueprint.scene_num,
+                chapter_num=blueprint.chapter_num,
+                event_type=blueprint.objective.target_scene_type.value,
+                emotional_impact=agent.emotional_pressure,
+                importance=min(1.0, 0.3 + agent.emotional_pressure * 0.7),
+                metadata={"objective": blueprint.objective.purpose}
             )
-            for mem in emotion_memories:
-                if mem.text not in seen:
-                    results.append(mem)
-                    seen.add(mem.text)
+            self.episodic.add(entry)
 
-        # Interpretation-based boosting (Change 6)
-        interpretations = self.interpretation_engine.query(
-            query.focus_character, top_k=5
+            if self.mode in ("CHAPTER", "BOOK"):
+                self._init_lazy_subsystems()
+                self._lazy_subsystems["interpretation"].process(agent.character.name, entry)
+                self._lazy_subsystems["consequence"].process(agent.character.name, entry)
+                self._lazy_subsystems["emotional"].process(agent.character.name, entry)
+                self._lazy_subsystems["relationship"].process(agent.character.name, entry)
+                self._lazy_subsystems["callback"].schedule(agent.character.name, entry)
+
+    def retrieve(self, blueprint_or_query, **kwargs) -> MemoryBundle | list[MemoryEntry]:
+        """Retrieve memories. Accepts SceneBlueprint or MemoryQuery."""
+        # Handle MemoryQuery (backward-compatible with tests)
+        if isinstance(blueprint_or_query, MemoryQuery):
+            query = blueprint_or_query
+            results = []
+            for entry in self.episodic.entries:
+                if entry.character == query.focus_character or query.focus_character in (entry.characters or []):
+                    if not query.context_query or query.context_query.lower() in (entry.text + entry.content).lower():
+                        results.append(entry)
+            return results[-query.top_k:] if results else []
+
+        self._init_lazy_subsystems()
+        blueprint = blueprint_or_query
+
+        states = blueprint.agent_states
+        if isinstance(states, dict):
+            states = list(states.values())
+        char_names = [a.character.name for a in states]
+        recent = []
+        for name in char_names:
+            recent.extend(self.episodic.recent(name, window=3))
+
+        bundle = MemoryBundle(
+            episodic=recent,
+            semantic=self.semantic.all_facts(),
+            belief=[],
         )
-        for interp in interpretations:
-            if interp.confidence > 0.7:
-                for r in results:
-                    if interp.source_event_text in r.text or r.text in interp.source_event_text:
-                        r.relevance_score = min(1.0, r.relevance_score * 1.25)
 
-        # RAG bridge retrieval from pre-built corpus
-        if self.rag_bridge is not None and self.rag_bridge.is_loaded:
-            rag_results = self.rag_bridge.retrieve(query)
-            for mem in rag_results:
-                if mem.text not in seen:
-                    results.append(mem)
-                    seen.add(mem.text)
+        for name in char_names:
+            bundle.belief.extend(self.belief.get_beliefs(name))
 
-        results = results[: query.top_k]
-        filtered = []
-        for mem in results:
-            is_dup = False
-            mem_words = set(mem.text.lower().split())
-            if not mem_words:
-                filtered.append(mem)
-                continue
-            for existing in filtered:
-                existing_words = set(existing.text.lower().split())
-                if not existing_words:
-                    continue
-                jaccard = len(mem_words & existing_words) / len(mem_words | existing_words)
-                if jaccard > 0.8:
-                    is_dup = True
-                    break
-            if not is_dup:
-                filtered.append(mem)
-        return filtered
+        if self.mode == "BOOK":
+            for name in char_names:
+                if "interpretation" in self._lazy_subsystems:
+                    bundle.interpretation.extend(self._lazy_subsystems["interpretation"].retrieve(name, blueprint))
+                if "consequence" in self._lazy_subsystems:
+                    bundle.consequence.extend(self._lazy_subsystems["consequence"].retrieve(name, blueprint))
+                if "emotional" in self._lazy_subsystems:
+                    bundle.emotional.extend(self._lazy_subsystems["emotional"].retrieve(name, blueprint))
+                if "relationship" in self._lazy_subsystems:
+                    bundle.relationship.extend(self._lazy_subsystems["relationship"].retrieve(name, blueprint))
+                if "callback" in self._lazy_subsystems:
+                    bundle.callback.extend(self._lazy_subsystems["callback"].retrieve(name, blueprint))
 
-    def recent_context(self, character: str, window: int = 3) -> list[str]:
-        recs = [r for r in self.episodic.records if character in r.characters]
-        return [r.text for r in recs[-window:]]
+        return bundle
 
-    # ------------------------------------------------------------------ #
-    # Interpretation Memory integration
-    # ------------------------------------------------------------------ #
+    def recent_context(self, character: str, window: int = 3) -> list[MemoryEntry]:
+        return self.episodic.recent(character, window)
 
-    @property
-    def interpretation_store(self) -> InterpretationStore:
-        return self.interpretation_engine.store
+    def beliefs_for(self, character: str) -> CharacterBeliefs:
+        """Return CharacterBeliefs for the named character."""
+        if character not in self._character_beliefs:
+            self._character_beliefs[character] = CharacterBeliefs()
+        return self._character_beliefs[character]
+
+    def record_fact(self, text: str, chapter_num: int, scene_num: int, characters: list[str]):
+        key = f"fact_{chapter_num}_{scene_num}_{characters[0] if characters else 'none'}"
+        entry = MemoryEntry(
+            text=text,
+            content=text,
+            chapter_num=chapter_num,
+            scene_num=scene_num,
+            characters=characters,
+            event_type="fact",
+        )
+        self.semantic.add_fact(key, entry)
+
+    def record_event(self, text: str, chapter_num: int, scene_num: int, characters: list[str], relevance_score: float = 0.5):
+        for char in characters:
+            entry = MemoryEntry(
+                text=text,
+                content=text,
+                chapter_num=chapter_num,
+                scene_num=scene_num,
+                characters=characters,
+                character=char,
+                relevance_score=relevance_score,
+                event_type="event",
+            )
+            self.episodic.add(entry)
+
+    def consequences_for_action(self, action: str) -> list:
+        """Query consequences for a given action text."""
+        results = []
+        for char, entries in self.consequence_engine._attempts.items():
+            pass  # We use lazy subsystems below
+        self._init_lazy_subsystems()
+        if "consequence" in self._lazy_subsystems:
+            cons_mem = self._lazy_subsystems["consequence"]
+            for char, entries in cons_mem.consequences.items():
+                for entry in entries:
+                    if action.lower() in (entry.content or "").lower():
+                        results.append(entry)
+        return results
+
+    def schedule_callback(self, memory_id: str, trigger_chapter: int, callback_data: dict):
+        self._init_lazy_subsystems()
+        if "callback" in self._lazy_subsystems:
+            self._lazy_subsystems["callback"]._schedule(callback_data, trigger_chapter)
+
+    def check_callbacks(self, chapter_num: int) -> list:
+        self._init_lazy_subsystems()
+        if "callback" in self._lazy_subsystems:
+            return self._lazy_subsystems["callback"].check(chapter_num)
+        return []
+
+    def mark_callback_fired(self, callback_id: str):
+        self._init_lazy_subsystems()
+        if "callback" in self._lazy_subsystems:
+            self._lazy_subsystems["callback"].mark_fired(callback_id)
+
+    def interpret_event(self, event_text: str, character_name: str, character_traits: list[str], chapter_num: int, scene_num: int):
+        self._init_lazy_subsystems()
+        if "interpretation" in self._lazy_subsystems:
+            entry = MemoryEntry(
+                text=event_text,
+                content=event_text,
+                character=character_name,
+                chapter_num=chapter_num,
+                scene_num=scene_num,
+            )
+            self._lazy_subsystems["interpretation"].process(character_name, entry)
 
     def record_interpretation(
         self,
@@ -266,228 +269,95 @@ class MemorySystem:
         source_event: str,
         interpretation: str,
         emotion_impact: str,
-        confidence: float = 0.5,
-        chapter_num: int = 0,
-        scene_num: int = 0,
-    ) -> InterpretationEntry:
-        return self.interpretation_engine.add_interpretation(
+        confidence: float,
+        chapter_num: int,
+        scene_num: int,
+    ) -> None:
+        """Record an HWSE-derived character interpretation of an event.
+
+        Wired from HWSEPipeline.after_scene(). Delegates to the lazy
+        InterpretationMemory subsystem when available (CHAPTER/BOOK modes),
+        and always retains a retrievable semantic copy so callers that
+        enable HWSE independently of memory mode still mutate state.
+        """
+        self._init_lazy_subsystems()
+        entry = MemoryEntry(
+            text=f"{character} interpreted: {interpretation}",
+            content=interpretation,
             character=character,
-            source_event=source_event,
-            interpretation=interpretation,
-            emotion_impact=emotion_impact,
-            confidence=confidence,
             chapter_num=chapter_num,
             scene_num=scene_num,
+            event_type="interpretation",
+            relevance_score=float(confidence),
+            metadata={
+                "source_event": source_event,
+                "emotion_impact": emotion_impact,
+                "confidence": confidence,
+            },
         )
+        if "interpretation" in self._lazy_subsystems:
+            self._lazy_subsystems["interpretation"].process(character, entry)
+        # Always keep a retrievable copy in semantic memory.
+        self.semantic.add_fact(f"interp_{chapter_num}_{scene_num}_{character}", entry)
 
-    def interpret_event(
-        self,
-        event_text: str,
-        character_name: str,
-        character_traits: list[str],
-        chapter_num: int = 0,
-        scene_num: int = 0,
-    ) -> InterpretationEntry:
-        return self.interpretation_engine.interpret_event(
-            event_text=event_text,
-            character_name=character_name,
-            character_traits=character_traits,
-            chapter_num=chapter_num,
-            scene_num=scene_num,
-        )
+    def record_consequence(self, character: str, action: str, consequence: str, success: bool, impact: float, chapter_num: int, scene_num: int):
+        self._init_lazy_subsystems()
+        if "consequence" in self._lazy_subsystems:
+            entry = MemoryEntry(
+                text=consequence,
+                content=consequence,
+                character=character,
+                chapter_num=chapter_num,
+                scene_num=scene_num,
+            )
+            self._lazy_subsystems["consequence"].process(character, entry)
 
-    def query_interpretations(
-        self,
-        character: str,
-        emotion_filter: str | None = None,
-        top_k: int = 5,
-    ) -> list[InterpretationEntry]:
-        return self.interpretation_engine.query(character, emotion_filter, top_k)
-
-    # ------------------------------------------------------------------ #
-    # Consequence Memory integration
-    # ------------------------------------------------------------------ #
-
-    @property
-    def consequence_store(self) -> ConsequenceStore:
-        return self.consequence_engine.store
-
-    def record_consequence(
-        self,
-        character: str,
-        action: str,
-        consequence: str,
-        success: bool,
-        impact: float = 0.5,
-        chapter_num: int = 0,
-        scene_num: int = 0,
-    ) -> ConsequenceEntry:
-        return self.consequence_engine.add_consequence(
-            character=character,
-            action=action,
-            consequence=consequence,
-            success=success,
-            impact=impact,
-            chapter_num=chapter_num,
-            scene_num=scene_num,
-        )
-
-    def query_consequences(
-        self, character: str, min_impact: float = 0.3
-    ) -> list[ConsequenceEntry]:
-        return self.consequence_engine.query(character, min_impact)
-
-    def consequences_for_action(self, action_keyword: str) -> list[ConsequenceEntry]:
-        return self.consequence_engine.consequences_for_action(action_keyword)
-
-    # ------------------------------------------------------------------ #
-    # Emotional Retrieval integration
-    # ------------------------------------------------------------------ #
-
-    def retrieve_by_emotion(
-        self, query_emotion: str, top_k: int = 5
-    ) -> list[MemoryEntry]:
-        return self.emotional_retrieval.retrieve_by_emotion(query_emotion, top_k)
-
-    def retrieve_emotional_context(
-        self, character: str, current_emotion: str
-    ) -> dict[str, list[MemoryEntry]]:
-        return self.emotional_retrieval.retrieve_emotional_context(
-            character, current_emotion
-        )
-
-    def emotional_timeline(self, character: str) -> list[dict]:
-        return self.emotional_retrieval.emotional_timeline(character)
-
-    # ------------------------------------------------------------------ #
-    # Relationship Delta integration
-    # ------------------------------------------------------------------ #
-
-    @property
-    def relationship_delta_store(self) -> RelationshipDeltaStore:
-        return self.relationship_deltas.store
-
-    def record_relationship_delta(
-        self,
-        a: str,
-        b: str,
-        old_rel: RelationKind,
-        new_rel: RelationKind,
-        trigger: str,
-        chapter_num: int = 0,
-    ) -> RelationshipDelta:
-        return self.relationship_deltas.record_delta(
-            a=a,
-            b=b,
-            old_rel=old_rel,
-            new_rel=new_rel,
-            trigger=trigger,
-            chapter_num=chapter_num,
-        )
-
-    def recent_relationship_changes(
-        self, character: str, window: int = 5
-    ) -> list[RelationshipDelta]:
-        return self.relationship_deltas.recent_changes(character, window)
-
-    def relationship_timeline(self, a: str, b: str) -> list[RelationshipDelta]:
-        return self.relationship_deltas.relationship_timeline(a, b)
+    def record_relationship_delta(self, a: str, b: str, old_rel, new_rel, trigger: str, chapter_num: int):
+        self._init_lazy_subsystems()
+        if "relationship" in self._lazy_subsystems:
+            entry = MemoryEntry(
+                text=trigger,
+                content=trigger,
+                chapter_num=chapter_num,
+                characters=[a, b],
+            )
+            self._lazy_subsystems["relationship"].process(a, entry, new_rel)
 
     def current_relationship_sentiment(self, a: str, b: str) -> float:
-        return self.relationship_deltas.current_sentiment(a, b)
+        self._init_lazy_subsystems()
+        if "relationship" in self._lazy_subsystems:
+            return self._lazy_subsystems["relationship"].sentiment(a, b)
+        return 0.0
 
-    # ------------------------------------------------------------------ #
-    # Callback Scheduler integration
-    # ------------------------------------------------------------------ #
+    def snapshot(self) -> dict[str, int]:
+        # Ensure lazy subsystems are initialized so counts reflect reality.
+        self._init_lazy_subsystems()
 
-    def schedule_callback(
-        self,
-        memory_id: str,
-        trigger_chapter: int,
-        callback_data: dict[str, Any] | None = None,
-    ) -> str:
-        return self.callback_scheduler.schedule_memory_callback(
-            memory_id=memory_id,
-            trigger_chapter=trigger_chapter,
-            callback_data=callback_data,
-        )
+        interpretation_count = 0
+        consequence_count = 0
+        relationship_delta_count = 0
 
-    def check_callbacks(self, current_chapter: int) -> list[ScheduledCallback]:
-        return self.callback_scheduler.check_callbacks(current_chapter)
+        interpretation = self._lazy_subsystems.get("interpretation")
+        if interpretation is not None:
+            interpretation_count = sum(
+                len(v) for v in interpretation.interpretations.values()
+            )
+        consequence = self._lazy_subsystems.get("consequence")
+        if consequence is not None:
+            consequence_count = sum(
+                len(v) for v in consequence.consequences.values()
+            )
+        relationship = self._lazy_subsystems.get("relationship")
+        if relationship is not None:
+            relationship_delta_count = sum(
+                len(v) for v in relationship.deltas.values()
+            )
 
-    def mark_callback_fired(self, callback_id: str) -> bool:
-        return self.callback_scheduler.mark_fired(callback_id)
-
-    def pending_callbacks(
-        self, chapter: int | None = None
-    ) -> list[ScheduledCallback]:
-        return self.callback_scheduler.pending_callbacks(chapter)
-
-    def clear_fired_callbacks(self) -> int:
-        return self.callback_scheduler.clear_fired()
-
-    # ------------------------------------------------------------------ #
-    # Bulk operations
-    # ------------------------------------------------------------------ #
-
-    def prune(self, keep_top_k: int = 100, min_relevance: float = 0.2) -> int:
-        """Prune low-importance memories to prevent unbounded growth.
-
-        For SHORT/CHAPTER stories, keeps only entries with
-        relevance_score above min_relevance. For BOOK mode,
-        keeps the top-K most relevant entries and prunes the rest.
-
-        Also prunes interpretations and consequences below confidence/impact thresholds.
-        Returns total number of entries removed across all stores.
-        """
-        removed = 0
-
-        # Prune episodic records
-        if len(self.episodic.records) > keep_top_k:
-            self.episodic.records.sort(key=lambda r: r.relevance_score, reverse=True)
-            before = len(self.episodic.records)
-            self.episodic.records = [
-                r for r in self.episodic.records
-                if r.relevance_score >= min_relevance
-            ][:keep_top_k]
-            removed += before - len(self.episodic.records)
-
-        # Prune emotional retrieval sync
-        self.emotional_retrieval.episodic_records = self.episodic.records
-
-        # Prune low-confidence interpretations
-        interp_store = self.interpretation_engine.store
-        if hasattr(interp_store, 'entries'):
-            before = len(interp_store.entries)
-            interp_store.entries = [
-                e for e in interp_store.entries
-                if e.confidence >= 0.3
-            ]
-            removed += before - len(interp_store.entries)
-
-        # Prune low-impact consequences
-        conseq_store = self.consequence_engine.store
-        if hasattr(conseq_store, 'entries'):
-            before = len(conseq_store.entries)
-            conseq_store.entries = [
-                e for e in conseq_store.entries
-                if e.impact_level >= 0.3
-            ]
-            removed += before - len(conseq_store.entries)
-
-        # Clear fired callbacks
-        removed += self.callback_scheduler.clear_fired()
-
-        return removed
-
-    def snapshot(self) -> dict[str, Any]:
-        """Return a snapshot of all memory state for serialization."""
         return {
-            "episodic_count": len(self.episodic.records),
+            "episodic_count": len(self.episodic.entries),
             "semantic_count": len(self.semantic.facts),
-            "interpretation_count": len(self.interpretation_store.entries),
-            "consequence_count": len(self.consequence_store.entries),
-            "relationship_delta_count": len(self.relationship_delta_store.deltas),
-            "pending_callbacks": len(self.callback_scheduler.pending_callbacks()),
-            "registered_characters": list(self._character_beliefs.keys()),
+            "belief_count": sum(len(v) for v in self.belief.beliefs.values()),
+            "interpretation_count": interpretation_count,
+            "consequence_count": consequence_count,
+            "relationship_delta_count": relationship_delta_count,
         }

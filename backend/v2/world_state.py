@@ -1,136 +1,81 @@
+"""
+SCRIPTY v2 — WorldState
+Single source of truth for world constraints. Extended by WorldEngine.
+"""
 from __future__ import annotations
 
-import re
-from typing import TYPE_CHECKING
+import asyncio
+from typing import Any, Optional
 
+from backend.external.location_engine import LocationEngine
+from backend.cache.cache_layer import CacheLayer
 from backend.utils.india_timeline import IndiaTimeline
-from backend.v2.types import WorldConstraints
-
-if TYPE_CHECKING:
-    from backend.external.location_engine import LocationEngine
-
-
-class LazyLocationEngine:
-    """Proxy that lazily imports and delegates to LocationEngine.
-
-    Avoids triggering the slow import chain (Config → load_dotenv → .env)
-    during module import. Falls back to minimal location data when the
-    import chain fails (e.g., filesystem corruption on curated_lists.py).
-    """
-
-    def __init__(self) -> None:
-        self._real: object | None = None
-        self._fallback = True
-
-    def _get(self) -> object:
-        if self._real is None:
-            try:
-                from backend.external.location_engine import LocationEngine
-                self._real = LocationEngine()
-                self._fallback = False
-            except Exception:
-                pass
-        return self._real
-
-    async def get_context(self, location_name: str, location_type: str = "urban") -> dict:
-        real = self._get()
-        if real is not None:
-            try:
-                return await real.get_context(location_name, location_type)  # type: ignore[union-attr]
-            except Exception:
-                pass
-        return {
-            "name": location_name,
-            "display_name": location_name,
-            "type": location_type,
-            "description": f"A {location_type} area known as {location_name}.",
-        }
-
-
-_NOMINATIM_PATTERNS = re.compile(
-    r"(recognized as stood|is the capital and|known as the capital|a site that stood as"
-    r"|which also known as|stood as the)",
-    re.IGNORECASE,
-)
-
-
-def _clean_location_description(description: str, original_name: str) -> str:
-    """Sanitize raw API location descriptions into narrative-friendly text.
-
-    Strips Nominatim display_name artifacts and falls back to the original
-    location name when the description is ungrammatical API output.
-    """
-    if not description:
-        return original_name
-
-    cleaned = description.strip()
-
-    if _NOMINATIM_PATTERNS.search(cleaned):
-        return original_name
-
-    # Strip leading "A urban area known as X" patterns
-    area_prefix = re.match(r"^A \w+ area known as (.+?)\.?$", cleaned)
-    if area_prefix:
-        return area_prefix.group(1).strip()
-
-    # Remove Wikipedia-style parenthetical suffixes: "Hyderabad (city)"
-    cleaned = re.sub(r"\s*\(.*?\)\s*$", "", cleaned)
-
-    # Take only content before first period if unreasonably long
-    if len(cleaned) > 80:
-        first_sentence = cleaned.split(".")[0]
-        if first_sentence:
-            cleaned = first_sentence + "."
-
-    return cleaned[:80].strip()
+from backend.v2.types import WorldConstraints, GenerationRequest
 
 
 class WorldState:
-    """Objective truth about the story world.
-
-    Responsible for producing WorldConstraints that directly constrain
-    what the realizer can generate. No metadata-only flows.
+    """
+    Builds WorldConstraints from location, year, and context.
+    This is the single source of truth for world data.
+    WorldEngine extends this and enriches with politics/culture/tech/economy/geography.
     """
 
-    def __init__(
-        self,
-        location_engine: object | None = None,
-    ) -> None:
-        self.loc_engine = location_engine or LazyLocationEngine()
+    def __init__(self, cache_layer: Optional[CacheLayer] = None):
+        self.cache_layer = cache_layer or CacheLayer()
+        self.loc_engine = LocationEngine(cache_layer=self.cache_layer)
 
-    async def build_constraints(
-        self,
-        location: str,
-        year: int,
-        location_type: str = "urban",
-        active_conflicts: list[str] | None = None,
-        unresolved_mysteries: list[str] | None = None,
-    ) -> WorldConstraints:
-        temporal = IndiaTimeline.get_temporal_context(year)
-        loc_data = await self.loc_engine.get_context(location, location_type)
-        raw_desc = loc_data.get("description", "")
-        clean_desc = _clean_location_description(raw_desc, location)
+    async def build_constraints(self, request_or_location=None, year: int = 1920, **kwargs) -> WorldConstraints:
+        """
+        Build world constraints from generation request or location/year kwargs.
+        This is the canonical method - WorldEngine delegates to this internally.
+        Supports both:
+          - build_constraints(request)  where request is a GenerationRequest
+          - build_constraints(location="Hyderabad", year=1920) for test convenience
+        """
+        # Handle kwargs-style calls (for test compatibility)
+        if request_or_location is not None and isinstance(request_or_location, str):
+            # build_constraints("Hyderabad", year=1920) or build_constraints(location="Hyderabad", year=1920)
+            filtered = {k: v for k, v in kwargs.items() if k != "location" and k in GenerationRequest.__dataclass_fields__}
+            request = GenerationRequest(location=request_or_location, year=year, **filtered)
+        elif request_or_location is not None and hasattr(request_or_location, 'location'):
+            request = request_or_location
+        else:
+            loc = kwargs.pop("location", str(request_or_location or "unknown"))
+            filtered = {k: v for k, v in kwargs.items() if k in GenerationRequest.__dataclass_fields__}
+            request = GenerationRequest(location=loc, year=year, **filtered)
+
+        loc_context = await self.loc_engine.get_context(
+            request.location, request.location_type
+        )
+        time_ctx = IndiaTimeline.get_temporal_context(request.year)
+
+        era = getattr(request, 'setting_period', '') or time_ctx.get("era", "historical")
+        tech_level = time_ctx.get("tech_level") or time_ctx.get("tech", "pre-industrial")
+        tone = time_ctx.get("tone", "serious")
+        infrastructure = time_ctx.get("infrastructure", ["buildings", "roads"])
+        transport = time_ctx.get("transport", ["walking", "riding"])
+
+        location_description = loc_context.get("description", f"A place called {request.location}")
+        if "display_name" in loc_context:
+            location_description = loc_context["display_name"]
 
         return WorldConstraints(
-            era=temporal["era"],
-            tech_level=temporal["tech"],
-            tone=temporal["tone"],
-            infrastructure=temporal["infrastructure"],
-            transport=temporal["transport"],
-            location_description=clean_desc,
-            year=year,
-            active_conflicts=active_conflicts or [],
-            unresolved_mysteries=unresolved_mysteries or [],
+            era=era,
+            tech_level=tech_level,
+            tone=tone,
+            infrastructure=infrastructure,
+            transport=transport,
+            location_description=location_description,
+            year=request.year,
         )
 
-    def to_generation_context(self, constraints: WorldConstraints) -> dict[str, str | list[str]]:
-        return {
-            "era": constraints.era,
-            "tech_level": constraints.tech_level,
-            "tone": constraints.tone,
-            "infrastructure": ", ".join(constraints.infrastructure),
-            "transport": ", ".join(constraints.transport),
-            "location": constraints.location_description,
-            "active_conflicts": constraints.active_conflicts,
-            "unresolved_mysteries": constraints.unresolved_mysteries,
-        }
+    def to_generation_context(self, constraints: WorldConstraints) -> dict[str, Any]:
+        """Delegate to WorldConstraints.to_generation_context()."""
+        return constraints.to_generation_context()
+
+    def enrich_constraints(self, base: WorldConstraints, request: GenerationRequest) -> WorldConstraints:
+        """
+        Hook for WorldEngine to enrich with politics, culture, tech, economy, geography.
+        Default implementation returns base unchanged.
+        """
+        return base

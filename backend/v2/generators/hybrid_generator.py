@@ -18,7 +18,7 @@ from backend.v2.generators.base import TextGenerator
 from backend.v2.generators.corpus_loader import _tokenize
 from backend.v2.generators.grammar_guard import GrammarGuard
 from backend.v2.generators.repetition_state import RepetitionState
-from backend.v2.generators.voice_adapter import VoiceAdapter
+from backend.v2.generators.voice_adapter import VoiceAdapter, VoiceFingerprint
 from backend.v2.types import (
     GeneratedScene,
     SceneBlueprint,
@@ -216,12 +216,28 @@ class SlotFiller:
         world: Any,
         attempt: int = 0,
     ) -> str:
+        focal = self._focal_agent(agents, slot)
+        modulate_fn = None
+        if self._voice is not None and focal is not None:
+            ocean = getattr(getattr(focal, "character", None), "ocean", None) or {}
+            fingerprint = VoiceFingerprint.from_ocean(ocean)
+
+            def _modulate(probs: dict, _fp=fingerprint):
+                return self._voice.modulate(probs, _fp)
+
+            modulate_fn = _modulate
+
         for _ in range(_MAX_REGENERATE):
             seed = self._build_seed(slot.category)
             temp = 0.8 + (attempt * 0.1)
-            tokens = self._ngram.generate_tokens(
-                seed=seed, max_tokens=35, temperature=temp,
-            )
+            if modulate_fn is not None:
+                tokens = self._ngram.generate_tokens(
+                    seed=seed, max_tokens=35, temperature=temp, modulate_fn=modulate_fn,
+                )
+            else:
+                tokens = self._ngram.generate_tokens(
+                    seed=seed, max_tokens=35, temperature=temp,
+                )
             if not tokens or len(tokens) < 3:
                 continue
             if self._grammar and not self._grammar.validate(tokens):
@@ -239,6 +255,28 @@ class SlotFiller:
                 self._repetition.track(text, cat)
             return text
         return ""
+
+    def _focal_agent(self, agents: list[Any], slot: SceneSlot) -> Any:
+        """Pick the character whose voice should modulate this slot.
+
+        Prefers a character named in the scene objective; otherwise falls
+        back to the first agent. Returns None when no agents are present.
+        """
+        if not agents:
+            return None
+        bp = self._last_blueprint
+        if bp is not None:
+            obj = getattr(bp, "objective", None)
+            if obj is not None:
+                chars = getattr(obj, "characters_involved", []) or []
+                agent_map = {
+                    getattr(getattr(a, "character", None), "name", ""): a
+                    for a in agents
+                }
+                for c in chars:
+                    if c in agent_map:
+                        return agent_map[c]
+        return agents[0]
 
     def _build_seed(self, category: str) -> list[str]:
         """Build a 4-6 word seed from the blueprint context.

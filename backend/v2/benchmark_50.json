@@ -1,0 +1,52 @@
+{
+  "Adventure": {
+    "avg_words": 662,
+    "dialogue_density": 0.1819,
+    "show_vs_tell": 1.25,
+    "emotional_expression": 1.0,
+    "repetition_rate": 0.1827,
+    "coherence": 0.4699,
+    "ttr": 0.1343,
+    "sim_patterns": 17
+  },
+  "Historical Fiction": {
+    "avg_words": 869,
+    "dialogue_density": 0.1958,
+    "show_vs_tell": 0.9697,
+    "emotional_expression": 2.0,
+    "repetition_rate": 0.1588,
+    "coherence": 0.4617,
+    "ttr": 0.1215,
+    "sim_patterns": 23
+  },
+  "Mystery": {
+    "avg_words": 504,
+    "dialogue_density": 0.2047,
+    "show_vs_tell": 0.9515,
+    "emotional_expression": 4.0,
+    "repetition_rate": 0.1742,
+    "coherence": 0.4505,
+    "ttr": 0.1302,
+    "sim_patterns": 24
+  },
+  "Fantasy": {
+    "avg_words": 794,
+    "dialogue_density": 0.1979,
+    "show_vs_tell": 1.3026,
+    "emotional_expression": 4.0,
+    "repetition_rate": 0.1554,
+    "coherence": 0.4726,
+    "ttr": 0.1174,
+    "sim_patterns": 21
+  },
+  "Romance": {
+    "avg_words": 517,
+    "dialogue_density": 0.2126,
+    "show_vs_tell": 1.0909,
+    "emotional_expression": 2.0,
+    "repetition_rate": 0.1652,
+    "coherence": 0.4641,
+    "ttr": 0.1247,
+    "sim_patterns": 24
+  }
+}

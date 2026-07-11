@@ -1,199 +1,153 @@
-"""5-gram language model with Kneser-Ney smoothing for story generation."""
-
+"""
+SCRIPTY v2 — NGramGenerator
+5-gram language model with Kneser-Ney smoothing.
+Trained on Gutenberg corpus (~2.7M lines).
+"""
 from __future__ import annotations
 
 import pickle
-import random
+import re
+from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
+import numpy as np
 from nltk.lm import KneserNeyInterpolated
 from nltk.lm.preprocessing import padded_everygram_pipeline
 
 from backend.v2.generators.base import TextGenerator
-from backend.v2.types import GeneratedScene, SceneBlueprint
+from backend.v2.types import SceneBlueprint, GeneratedScene
 
-_MIN_START_TOKENS = 2
-_MAX_GENERATE_ATTEMPTS = 3
+
+def _tokenize(text: str) -> list[str]:
+    return re.findall(r"\b\w+(?:'\w+)?|\.|,|!|\?|;|:|\"|'|\(|\)", text.lower())
 
 
 class NGramGenerator(TextGenerator):
-    """n-gram language model using Kneser-Ney smoothing.
-
-    Generates token-by-token text from a trained model.
-    Pads sequences with <s> and </s> for sentence boundaries.
+    """
+    5-gram Kneser-Ney language model for token-by-token generation.
+    Supports save/load via pickle.
     """
 
     def __init__(
         self,
         order: int = 5,
         temperature: float = 0.8,
-        seed: int | None = None,
-    ) -> None:
+        model_path: Optional[str] = None
+    ):
         self.order = order
         self.temperature = temperature
-        self._rng = random.Random(seed)
-        self._model: KneserNeyInterpolated | None = None
-        self._vocabulary: set[str] = set()
-        self._is_trained = False
+        self.model: Optional[KneserNeyInterpolated] = None
+        self.vocabulary: dict[str, int] = {}
 
-    def train(
-        self,
-        sentences: list[list[str]],
-        vocabulary: list[str] | None = None,
-    ) -> None:
-        if not sentences:
-            raise ValueError("No training sentences provided")
+        if model_path:
+            self.load(model_path)
 
-        if vocabulary is not None:
-            self._vocabulary = set(vocabulary)
+    def train(self, sentences: list[list[str]], vocabulary: Optional[list[str]] = None) -> None:
+        """Train the Kneser-Ney model on tokenized sentences."""
+        if vocabulary:
+            self.vocabulary = {w: i for i, w in enumerate(vocabulary)}
         else:
-            self._vocabulary = {tok for sent in sentences for tok in sent}
+            counter = Counter()
+            for sent in sentences:
+                for tok in sent:
+                    counter[tok] += 1
+            self.vocabulary = dict(counter)
 
-        train_data, padded_sents = padded_everygram_pipeline(
-            self.order, sentences
-        )
-
-        self._model = KneserNeyInterpolated(self.order)
-        self._model.fit(train_data, padded_sents)
-        self._is_trained = True
-
-    @property
-    def is_trained(self) -> bool:
-        return self._is_trained
-
-    @property
-    def vocab_size(self) -> int:
-        return len(self._vocabulary)
+        train_data, padded_sents = padded_everygram_pipeline(self.order, sentences)
+        self.model = KneserNeyInterpolated(self.order)
+        self.model.fit(train_data, padded_sents)
 
     def generate_tokens(
         self,
-        seed: list[str] | None = None,
-        max_tokens: int = 100,
-        temperature: float | None = None,
+        seed: Optional[list[str]] = None,
+        max_tokens: int = 200,
+        temperature: Optional[float] = None,
+        modulate_fn: Optional[Any] = None,
     ) -> list[str]:
-        if not self._is_trained or self._model is None:
-            raise RuntimeError("Model not trained. Call train() first.")
+        """Generate tokens using the trained model.
+
+        If ``modulate_fn`` is provided, it is applied to the per-step
+        probability distribution (a dict mapping token -> raw prob) before
+        sampling, enabling voice/personality modulation of the output.
+        """
+        if self.model is None:
+            raise RuntimeError("Model not trained or loaded")
 
         temp = temperature if temperature is not None else self.temperature
-        tokens = list(seed) if seed else []
-
-        if len(tokens) < self.order - 1:
-            tokens = ["<s>"] * (self.order - 1 - len(tokens)) + tokens
-
-        result: list[str] = []
-        context = tuple(tokens[-(self.order - 1) :])
+        context = tuple(seed) if seed else tuple(["<s>"] * (self.order - 1))
+        tokens = list(context[-(self.order-1):]) if context else []
 
         for _ in range(max_tokens):
-            next_token = self._generate_next(context, temp)
-            if next_token == "</s>" or next_token is None:
+            if len(context) < self.order - 1:
+                context = tuple(["<s>"] * (self.order - 1 - len(context))) + context
+
+            probs = {}
+            vocab_items = list(self.vocabulary.keys())
+            for word in vocab_items[:1000]:
+                prob = self.model.score(word, context)
+                if prob > 0:
+                    probs[word] = prob
+
+            if not probs:
                 break
-            result.append(next_token)
-            context = self._update_context(context, next_token)
 
-        return result
+            if modulate_fn is not None:
+                probs = modulate_fn(probs)
 
-    def _generate_next(
-        self, context: tuple[str, ...], temperature: float
-    ) -> str | None:
-        if self._model is None:
-            return None
+            words = list(probs.keys())
+            scores = np.array(list(probs.values()))
+            scores = scores / scores.sum()
+            scores = scores ** (1.0 / max(temp, 0.01))
+            scores = scores / scores.sum()
 
-        counts = self._model.context_counts(context)
-        if not counts:
-            return None
+            next_token = np.random.choice(words, p=scores)
+            tokens.append(next_token)
 
-        tokens_list = list(counts.keys())
-        weights = [counts[t] for t in tokens_list]
+            if next_token in {".", "!", "?"}:
+                if len(tokens) > 20:
+                    break
 
-        if temperature != 1.0:
-            weights = [w ** (1.0 / temperature) for w in weights]
+            context = tuple(tokens[-(self.order-1):])
 
-        total = sum(weights)
-        if total == 0:
-            return None
+        return tokens
 
-        probs = [w / total for w in weights]
-        return self._rng.choices(tokens_list, weights=probs, k=1)[0]
-
-    def _update_context(
-        self, context: tuple[str, ...], token: str
-    ) -> tuple[str, ...]:
-        context_list = list(context)
-        context_list.append(token)
-        if len(context_list) >= self.order:
-            context_list = context_list[-(self.order - 1) :]
-        return tuple(context_list)
-
-    def generate_text(
-        self,
-        seed_text: str = "",
-        max_tokens: int = 100,
-        temperature: float | None = None,
-    ) -> str:
-        from backend.v2.generators.corpus_loader import _tokenize
-
-        seed_tokens = _tokenize(seed_text) if seed_text else []
-        tokens = self.generate_tokens(
-            seed=seed_tokens,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return self._detokenize(tokens)
-
-    def _detokenize(self, tokens: list[str]) -> str:
-        text = " ".join(tokens)
-        text = (
-            text.replace(" ,", ",")
-            .replace(" .", ".")
-            .replace(" !", "!")
-            .replace(" ?", "?")
-            .replace(" ;", ";")
-            .replace(" :", ":")
-            .replace(" ' ", "'")
-            .replace(" '", "'")
-            .replace(' " ', '"')
-            .replace('" ', '"')
-            .replace(' "', '"')
-            .replace("( ", "(")
-            .replace(" )", ")")
-            .replace(" - ", " - ")
-            .replace("  ", " ")
-            .strip()
-        )
-        text = text.replace(" i ", " I ").replace(" i'", " I'")
-        if text.startswith("i "):
-            text = "I " + text[2:]
-        elif text.startswith("i'"):
-            text = "I'" + text[2:]
-        if text and text[0].isalpha():
-            text = text[0].upper() + text[1:]
-        return text
+    def generate_sentence(self, seed: Optional[list[str]] = None, temperature: Optional[float] = None) -> str:
+        tokens = self.generate_tokens(seed, max_tokens=50, temperature=temperature)
+        return " ".join(tokens).replace(" .", ".").replace(" ,", ",").replace(" !", "!").replace(" ?", "?")
 
     def save(self, path: str | Path) -> None:
+        """Serialize model to pickle."""
+        if self.model is None:
+            raise RuntimeError("No model to save")
         data = {
             "order": self.order,
             "temperature": self.temperature,
-            "vocabulary": self._vocabulary,
-            "model": self._model,
+            "vocabulary": self.vocabulary,
+            "model": self.model,
         }
         with open(path, "wb") as f:
             pickle.dump(data, f)
 
     @classmethod
-    def load(cls, path: str | Path) -> NGramGenerator:
+    def load(cls, path: str | Path) -> "NGramGenerator":
+        """Load model from pickle."""
         with open(path, "rb") as f:
             data = pickle.load(f)
-        gen = cls(order=data["order"], temperature=data["temperature"])
-        gen._vocabulary = data["vocabulary"]
-        gen._model = data["model"]
-        gen._is_trained = True
-        if gen._model is not None:
-            gen._model.vocab = data.get("vocabulary", gen._model.vocab)
+        gen = cls(order=data["order"], temperature=data.get("temperature", 0.8))
+        gen.vocabulary = data["vocabulary"]
+        gen.model = data["model"]
         return gen
 
     def generate(self, blueprint: SceneBlueprint) -> GeneratedScene:
-        raise NotImplementedError(
-            "NGramGenerator is a low-level token generator. "
-            "Use HybridGenerator for full scene generation."
+        """Generate a scene using n-gram model (fallback)."""
+        seed_tokens = _tokenize(blueprint.preceding_context)[-4:]
+        tokens = self.generate_tokens(seed=seed_tokens, max_tokens=300)
+        text = " ".join(tokens).replace(" .", ".").replace(" ,", ",").replace(" !", "!").replace(" ?", "?")
+        return GeneratedScene(
+            content=text,
+            scene_type=blueprint.objective.target_scene_type,
+            word_count=len(text.split()),
+            tension=blueprint.objective.required_tension,
+            characters_involved=blueprint.objective.characters_involved,
         )

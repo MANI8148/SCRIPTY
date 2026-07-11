@@ -1,0 +1,649 @@
+{
+  "meta": {
+    "plan_name": "STORY-FIRST REALIZER REBUILD",
+    "target_file": "backend/v2/dramatic_realizer.py",
+    "supporting_files": [
+      "backend/v2/pipeline.py",
+      "backend/v2/types.py",
+      "backend/v2/narrative_quality_benchmark.py",
+      "backend/v2/state_update.py",
+      "backend/v2/engine.py"
+    ],
+    "current_metrics": {
+      "dialogue_density": 0.0,
+      "show_vs_tell": 0.484,
+      "unique_sentence_starts": 0.408,
+      "emotional_expression": 1.333,
+      "repetition_rate": 0.200,
+      "coherence": 0.441
+    },
+    "target_metrics": {
+      "dialogue_density": 0.15,
+      "show_vs_tell": 3.0,
+      "unique_sentence_starts": 0.85,
+      "emotional_expression": 0.5,
+      "repetition_rate": 0.10,
+      "coherence": 0.80
+    },
+    "existing_tests_count": 186,
+    "must_pass_all_tests": true,
+    "guardrails": [
+      "No changes to StoryPlanner, CharacterAgent, MemorySystem, ConflictResolver, WorldState core interfaces",
+      "HWSE pipeline must remain functional",
+      "Realizer must remain deterministic (no LLM calls)",
+      "All 186 existing tests must pass after each phase",
+      "Fallback paths must exist — never crash if substate is missing"
+    ]
+  },
+
+  "phase_1_dialogue": {
+    "name": "PHASE 1 — Dialogue Guarantee & Depth",
+    "description": "Guarantee at least one dialogue scene in SHORT mode. Increase dialogue line count per scene. Generate dialogue from character state (intentions, relationships, habits, emotional pressure, relationship sentiment). Reduce hardcoded dialogue pools by at least 30%.",
+    "dependencies": [],
+    "risk": "low",
+    "estimated_loc": 280,
+    "success_metric": "dialogue_density > 0.15",
+
+    "changes": [
+      {
+        "id": "D1.1",
+        "description": "Fix smart-quote vs ASCII-quote mismatch in benchmark detector",
+        "file": "backend/v2/narrative_quality_benchmark.py",
+        "lines": "136-149 (measure_dialogue_density)",
+        "change": "Extend regex to also detect Unicode left/right double quotes (\\u201c\\u201d) which the realizer actually emits. Currently only ASCII \" is detected, producing false 0.0.",
+        "code_pattern": "quotes = re.findall(r'[\\u201c\"]([^\"]*)[\\u201d\"]', story)",
+        "not_change": "Do not change any metric semantics or other metrics.",
+        "risk": "low",
+        "loc": 3,
+        "test_assertion": "assert measure_dialogue_density(['\\u201cHello\\u201d']) > 0.0"
+      },
+      {
+        "id": "D1.2",
+        "description": "Increase dialogue lines per scene from 2 to 4-6 per speaker pair",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1351-1386 (_build_dialogue_scene)",
+        "change": "Replace the hardcoded 2-line loop with a 4-6 line loop modulated by emotional_pressure. Higher pressure = more/longer dialogue lines. Use agent emotional_pressure to determine line count: if avg_pressure > 0.6 use 3 rounds, else 2 rounds.",
+        "code_pattern": "rounds = 3 if sum(agent.emotional_pressure for ...) / max(...) > 0.6 else 2\nfor _ in range(rounds):\\n    for speaker in speakers:",
+        "not_change": "Do not alter `_compose_dialogue_line` signature or logic.",
+        "risk": "low",
+        "loc": 15,
+        "test_assertion": "len([e for e in events if e.kind == EventKind.DIALOGUE]) >= 4"
+      },
+      {
+        "id": "D1.3",
+        "description": "Add dialogue to action scenes (1-2 lines during complications)",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1388-1415 (_build_action_scene)",
+        "change": "The action scene already includes dialogue after complication. Move this BEFORE the complication and add a second dialogue round after the complication. This gives action scenes 2 dialogue events.",
+        "code_pattern": "# Move dialogue to before-complication, add second round after\n# D1.3: Increase from 1 round to 2 rounds of dialogue in action scenes",
+        "not_change": "Keep all existing action scene structure (opening, action, complication, outcome).",
+        "risk": "low",
+        "loc": 10,
+        "test_assertion": "len([e for e in action_events if e.kind == EventKind.DIALOGUE]) >= 2"
+      },
+      {
+        "id": "D1.4",
+        "description": "Generate dialogue line content from character state instead of static pools (50% of the time)",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1070-1102 (_compose_dialogue_line)",
+        "change": "Add a new method `_generate_dialogue_from_state(agent, other_name, bp)` that constructs dialogue from: intention.goal, relationship belief, emotional pressure, and trait. Use templates like: '{name} {verb}: \"{intention.goal} is all that matters.\"'. Interleave with static pool selections at 50/50 ratio. When char_agent is unavailable, fall back to existing static pool.",
+        "code_pattern": "if char_agent and random.random() < 0.5:\\n    dialogue = self._generate_dialogue_from_state(agent, other_name, bp)\\nelse:\\n    dialogue = random.choice(lines)",
+        "not_change": "Do not remove the static _DIALOGUE_LINES pools. They remain as fallback.",
+        "risk": "medium",
+        "loc": 60,
+        "test_assertion": "Generated dialogue lines contain character goal words when state-based generation fires."
+      },
+      {
+        "id": "D1.5",
+        "description": "State-driven dialogue generator method",
+        "file": "backend/v2/dramatic_realizer.py",
+        "change": "Add method `_generate_dialogue_from_state(self, agent, other_name, bp) -> str` that constructs dialogue lines from character state: intention.goal appears in the line 60% of the time, relationship_belief modulates tone (enemy=accusatory, ally=trusting, neutral=informational), emotional_pressure adds urgency markers (short sentences for high pressure, longer for low). Use templates like: '{goal}'s what drives me.', 'You {relationship_action} {target}.', 'I know about {discovery}.', 'This is about {goal} - nothing else.' \n\nThis must never crash — if agent or agent.intention is None, fall back to static pool.",
+        "code_pattern": "def _generate_dialogue_from_state(self, agent, other_name, bp) -> str:\\n    ...",
+        "not_change": "Do not modify any existing DialogueIntent, VoiceFingerprint, or drift pipeline.",
+        "risk": "medium",
+        "loc": 55,
+        "test_assertion": "Returns string; never raises; fallback to static pool on None agent."
+      },
+      {
+        "id": "D1.6",
+        "description": "Add dialogue to TRANSITION and DESCRIPTION scenes",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1448-1498 (_build_description_scene, _build_transition_scene)",
+        "change": "Add 1 dialogue line between first two characters in description and transition scenes. Use existing _compose_dialogue_line but only if len(chars) >= 2.",
+        "code_pattern": "if len(chars) >= 2:\\n    line = self._compose_dialogue_line(agent, chars[1], bp)\\n    events.append(DramaticEvent(EventKind.DIALOGUE, line, chars[:2], ...))",
+        "not_change": "Do not change the fundamental structure of these scene types.",
+        "risk": "low",
+        "loc": 20,
+        "test_assertion": "Description and transition scenes produce at least 1 dialogue event when 2+ characters present."
+      },
+      {
+        "id": "D1.7",
+        "description": "Add dialogue habits and relationship sentiment to affect dialogue line choices",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1106-1125",
+        "change": "Use relationship sentiment from memory (available via bp.agent_states beliefs.relationship_beliefs) to adjust line selection: if sentiment < 0 (negative), prefer 'threaten', 'challenge', 'deceive' intents. If sentiment > 0 (positive), prefer 'comfort', 'cooperate', 'reveal'. This integrates the relationship delta system into dialogue line intent selection.",
+        "code_pattern": "rel_val = agent.beliefs.relationship_beliefs.get(other_name, '')\\nif rel_val in ('enemy', 'distrusted', 'hostile'):\\n    hostile_keys = ['threaten', 'challenge', 'deceive']\\n    if any(k in _DIALOGUE_LINES for k in hostile_keys):\\n        lines = _DIALOGUE_LINES.get(random.choice(hostile_keys), lines)",
+        "not_change": "Do not alter DialogueIntentResolver or CharacterAgent interfaces.",
+        "risk": "low",
+        "loc": 25,
+        "test_assertion": "Dialogue line pool shifts based on relationship belief values."
+      },
+      {
+        "id": "D1.8",
+        "description": "Add dialogue to INTROSPECTION scenes when 2+ characters present",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1417-1446 (_build_introspection_scene)",
+        "change": "The introspection scene already has 1 dialogue line at the end. Increase the chance it fires from 'always if len>=2' to always produce 2 lines when 2+ characters present. Add a second round after a reaction.",
+        "code_pattern": "if len(chars) >= 2:\\n    # D1.8: second dialogue round\\n    agent2 = bp.agent_states.get(other)\\n    if agent2:\\n        line2 = self._compose_dialogue_line(agent2, speaker, bp)\\n        events.append(DramaticEvent(...))",
+        "not_change": "Keep the existing single dialogue line as the primary. Second is optional (50% chance).",
+        "risk": "low",
+        "loc": 15,
+        "test_assertion": "Introspection scenes with 2+ chars have 1-2 dialogue events."
+      },
+      {
+        "id": "D1.9",
+        "description": "Reduce hardcoded dialogue pools — mark as deprecated for state-based replacement",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "75-201 (_DIALOGUE_LINES)",
+        "change": "Reduce _DIALOGUE_LINES pools by removing ~30% of lines from each intent. Keep the most evocative/versatile lines. Mark static pools with comment '# STATIC POOL — use state generation in preference'.",
+        "code_pattern": "# STATIC POOL — use state generation in preference\\n_DIALOGUE_LINES: dict[str, list[str]] = {\\n    \\\"reveal\\\": [\\n        \\\"I know what really happened.\\\",\\n        \\\"The truth is, nobody is safe.\\\",\\n        \\\"There is something you need to know.\\\",\\n        \\\"It was not what it seemed.\\\",\\n    ],",
+        "not_change": "Keep keys (intent types) intact. Only reduce pool sizes.",
+        "risk": "low",
+        "loc": 40,
+        "test_assertion": "All intent keys still exist in _DIALOGUE_LINES."
+      }
+    ]
+  },
+
+  "phase_2_show_dont_tell": {
+    "name": "PHASE 2 — Show Don't Tell Expansion",
+    "description": "Replace emotional labels with observable behavior. Create behavioral mappings for: fear, guilt, anger, trust, suspicion, grief, joy, shame, determination. Expand _SHOW_VS_TELL and _BODY_LANGUAGE with trait-specific behavioral patterns.",
+    "dependencies": ["phase_1_dialogue"],
+    "risk": "medium",
+    "estimated_loc": 200,
+    "success_metric": "show_vs_tell > 3.0",
+
+    "changes": [
+      {
+        "id": "SDT2.1",
+        "description": "Expand _SHOW_VS_TELL to cover all 9 target emotions across all 3 relationship contexts",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "213-238 (_SHOW_VS_TELL dict)",
+        "change": "Add entries for: guilt, trust, suspicion, grief, joy, shame, determination. Each gets 2-3 patterns per relationship context (enemy/neutral/ally). Currently only angry, fearful, desperate, calm exist.",
+        "code_pattern": "\"guilt\": {\\n    \"enemy\": [\"He could not meet their eyes, shame burning in his chest.\", \"Every word felt like a confession he had not meant to make.\"],\\n    \"neutral\": [\"She stared at her hands as if they belonged to someone else.\", \"The words caught in her throat, too heavy to release.\"],\\n    \"ally\": [\"He flinched at the kindness in their voice — he did not deserve it.\", \"She shook her head slowly, unwilling to forgive herself.\"],\\n},\\n\"determination\": {\\n    \"enemy\": [\"His jaw set like stone. He would not break.\", \"She planted her feet and did not waver.\"],\\n    \"neutral\": [\"He squared his shoulders and stepped forward.\", \"Her gaze hardened with unspoken resolve.\"],\\n    \"ally\": [\"She reached out, her hand steady for the first time.\", \"He nodded once — there was no hesitation left.\"],\\n},",
+        "not_change": "Do not remove existing entries. Only add new ones.",
+        "risk": "low",
+        "loc": 80,
+        "test_assertion": "All 9 emotion keys exist in _SHOW_VS_TELL."
+      },
+      {
+        "id": "SDT2.2",
+        "description": "Expand _BODY_LANGUAGE with new emotion keys",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "240-271 (_BODY_LANGUAGE dict)",
+        "change": "Add body language patterns for: guilt, trust, suspicion, grief, joy, shame, determination. Each gets 3-4 patterns.",
+        "code_pattern": "\"guilt\": [\\n    \"He could not lift his gaze from the floor.\",\\n    \"Her hands twisted together, unable to rest.\",\\n    \"Every word he spoke came out like an apology.\",],\\n\"determination\": [\\n    \"He set his shoulders and met the moment head-on.\",\\n    \"Her focus narrowed to a single point of intent.\",\\n    \"He did not blink, did not flinch, did not yield.\",],",
+        "not_change": "Do not remove existing body language entries.",
+        "risk": "low",
+        "loc": 50,
+        "test_assertion": "All 4 old + 7 new = 11 emotion keys exist in _BODY_LANGUAGE."
+      },
+      {
+        "id": "SDT2.3",
+        "description": "Modify _compose_character_action to prefer behavioral expression over state labels",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "868-965 (_compose_character_action)",
+        "change": "Increase the behavioral expression weight from 1.0 to priority over body language pool. Currently behavioral (from _SHOW_VS_TELL) is checked first and used if present. Add fallback: if no behavioral match, build a compound expression by combining body language + action verb + adverb, rather than using body alone. Ensure the ekey mapping catches all new emotions.",
+        "code_pattern": "ekey = _emotion_key(pressure, traits)\\n# SDT2.3: Prefer behavioral; if none, build from body + verb + adverb\\nbehavioral = _behavioral_expression(ekey, target, traits, beliefs)\\nif behavioral:\\n    body = behavioral\\nelse:\\n    body = random.choice(_BODY_LANGUAGE.get(ekey, _BODY_LANGUAGE[\\\"neutral\\\"]))\\n    # Build compound: body + verb phrase\\n    action_desc = f\\\"{body} {verb_phrase} {target} {adverb}.\\\"\\n    return action_desc",
+        "not_change": "Do not change the _emotion_key function signature.",
+        "risk": "medium",
+        "loc": 20,
+        "test_assertion": "Action descriptions contain behavioral triggers at least 60% of the time when emotion key matches."
+      },
+      {
+        "id": "SDT2.4",
+        "description": "Add trait-specific behavioral mappings to _TRAIT_ACTION_VERBS for new emotions",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "295-315 (_TRAIT_ACTION_VERBS)",
+        "change": "Add entries for new traits: 'determined', 'guilty', 'suspicious', 'grieving', 'joyful', 'ashamed'. Each gets verb patterns for relevant action keys.",
+        "code_pattern": "\"determined\": {\\n    \"confront\": [\"faced without flinching\", \"met head-on with resolve\"],\\n    \"pursue\": [\"pressed forward with single-minded focus\", \"refused to be turned aside\"],\\n},\\n\"suspicious\": {\\n    \"confront\": [\"circled, watching for tells\", \"probed with careful questions\"],\\n    \"investigate\": [\"scrutinized every detail\", \"examined with distrust\"],\\n},",
+        "not_change": "Do not modify existing trait entries.",
+        "risk": "low",
+        "loc": 35,
+        "test_assertion": "Trait-specific verbs are used when character has matching trait."
+      }
+    ]
+  },
+
+  "phase_3_scene_type_realization": {
+    "name": "PHASE 3 — Scene-Type Realization Diversity",
+    "description": "ACTION, DIALOGUE, REVELATION, CONFLICT, TRANSITION scenes must have unique openings, transitions, endings, and pacing. Each scene type currently shares too much structure.",
+    "dependencies": ["phase_1_dialogue", "phase_2_show_dont_tell"],
+    "risk": "medium",
+    "estimated_loc": 180,
+    "success_metric": "unique_sentence_starts > 0.85",
+
+    "changes": [
+      {
+        "id": "STR3.1",
+        "description": "Add scene-type-specific sentence start patterns for each NarrativeMode",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "After _MODE_OUTCOMES (insert new dict before # Character voice helpers)",
+        "change": "Create _MODE_SENTENCE_STARTS dict mapping NarrativeMode to 10+ unique sentence opener patterns. Each mode gets distinct rhythm: CONFRONTATION starts with verbs ('He struck.', 'She turned.'), REVELATION starts with 'The', 'What', 'How', DISCOVERY starts with 'There', 'Something', TRANSITION starts with temporal markers ('As', 'When', 'Later'). These are used in paragraph composition.",
+        "code_pattern": "_MODE_SENTENCE_STARTS: dict[NarrativeMode, list[str]] = {\\n    NarrativeMode.CONFRONTATION: [\\n        \\\"He struck first.\\\", \\\"She did not wait.\\\", \\\"The blow came from nowhere.\\\",\\n        \\\"Neither moved.\\\", \\\"Anger drove the next move.\\\", \\\"Steel met steel.\\\",\\n        \\\"He lunged.\\\", \\\"She sidestepped.\\\", \\\"The impact shook them both.\\\",\\n        \\\"Blood and breath mingled.\\\", \\\"There was no hesitation now.\\\",\\n    ],",
+        "not_change": "Do not modify existing mode templates. Only add new sentence start patterns used by a new paragraph composer.",
+        "risk": "low",
+        "loc": 80,
+        "test_assertion": "New dict has entries for all 11 NarrativeModes."
+      },
+      {
+        "id": "STR3.2",
+        "description": "Create a ParagraphComposer that interleaves sentence starts from _MODE_SENTENCE_STARTS with existing event text",
+        "file": "backend/v2/dramatic_realizer.py",
+        "change": "Add method `_compose_paragraphs(self, events, mode) -> str` that:\n1. Uses _MODE_SENTENCE_STARTS to replace the first sentence of the OPENING event 40% of the time\n2. Uses scene-type-specific transition between events (action→dialogue uses different bridge than opening→reaction)\n3. Uses _MODE_OUTCOMES less predictable — interleave with fresh composed closers\n\nCurrently `realize()` just joins event texts with '\\n\\n'. This new method adds structural variety.",
+        "code_pattern": "def _compose_paragraphs(self, events: list[DramaticEvent], mode: NarrativeMode) -> str:\\n    paragraphs = []\\n    for i, event in enumerate(events):\\n        text = event.text\\n        if event.kind == EventKind.OPENING and mode in _MODE_SENTENCE_STARTS and random.random() < 0.4:\\n            # Replace first sentence with mode-specific start\\n            start = random.choice(_MODE_SENTENCE_STARTS[mode])\\n            text = start + ' ' + event.text\\n        paragraphs.append(text)\\n    return '\\n\\n'.join(paragraphs)",
+        "not_change": "Keep existing event construction logic intact. ParagraphComposer only affects final assembly.",
+        "risk": "medium",
+        "loc": 35,
+        "test_assertion": "Output contains varied sentence starts matching mode-specific patterns."
+      },
+      {
+        "id": "STR3.3",
+        "description": "Update realize() to use _compose_paragraphs for final assembly",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "715-728 (realize method)",
+        "change": "Replace the simple '\\n\\n'.join(paragraphs) with call to _compose_paragraphs(events, mode). The mode variable is already available from _build_event_chain. Add 'mode' as a field on DramaticRealizer instance state (self._current_mode) set during _build_event_chain.",
+        "code_pattern": "content = self._compose_paragraphs(events, self._current_mode) if events else ''",
+        "not_change": "Do not change the GeneratedScene construction or return type.",
+        "risk": "low",
+        "loc": 5,
+        "test_assertion": "All existing tests still pass with new paragraph composition."
+      },
+      {
+        "id": "STR3.4",
+        "description": "Store current narrative mode on the realizer instance",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "686-700 (DramaticRealizer class)",
+        "change": "Add `self._current_mode: NarrativeMode = NarrativeMode.GENERIC` in __init__. Set `self._current_mode = mode` at end of _build_event_chain.",
+        "code_pattern": "def __init__(self):\\n    self._agents_map = {}\\n    self._current_mode = NarrativeMode.GENERIC  # STR3.4",
+        "not_change": "Do not change any existing method signatures.",
+        "risk": "low",
+        "loc": 3,
+        "test_assertion": "Self._current_mode is always a NarrativeMode enum value."
+      }
+    ]
+  },
+
+  "phase_4_sentence_diversity": {
+    "name": "PHASE 4 — Sentence Diversity & Repetition Reduction",
+    "description": "Add 30+ opening patterns, 30+ transition patterns, 30+ outcome patterns. Reduce repetition_rate from 0.20 to <0.10. Increase unique_sentence_starts from 0.40 to >0.85.",
+    "dependencies": ["phase_3_scene_type_realization"],
+    "risk": "low",
+    "estimated_loc": 140,
+    "success_metric": "unique_sentence_starts > 0.85 AND repetition_rate < 0.10",
+
+    "changes": [
+      {
+        "id": "SD4.1",
+        "description": "Add 30+ unique opening sentence patterns to _MODE_SENTENCE_STARTS",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "New dict (added in STR3.1)",
+        "change": "Extend each NarrativeMode's list to 15+ patterns (total 30+ across all modes). Use varied grammatical structures: prepositional phrases ('At the edge of the market...'), gerund phrases ('Walking through the rain-soaked streets...'), adverbial clauses ('While the city slept...'), direct character action ('Arjun pressed forward.'), sensory openings ('The smell of dust and old secrets hung in the air.').",
+        "code_pattern": "# SD4.1: Extend each mode to 15+ patterns\\nNarrativeMode.DISCOVERY: [\\n    \\\"Curiosity pulled them forward.\\\",\\n    \\\"At the edge of the known map, something waited.\\\",\\n    \\\"Walking through the ruins, he felt eyes upon him.\\\",\\n    \\\"The clue was hidden in plain sight.\\\",\\n    \\\"She ran her fingers over the worn inscription.\\\",\\n    + 10 more...\\n]",
+        "not_change": "Do not remove any existing patterns.",
+        "risk": "low",
+        "loc": 40,
+        "test_assertion": "Sum of all mode patterns >= 30."
+      },
+      {
+        "id": "SD4.2",
+        "description": "Add 30+ transition patterns between event types",
+        "file": "backend/v2/dramatic_realizer.py",
+        "change": "Create _EVENT_TRANSITIONS dict mapping (EventKind, EventKind) -> list[str]. Example: (OPENING, ACTION) -> ['Then everything changed.', 'What happened next was inevitable.', 'The moment shattered.']. Use in _compose_paragraphs to insert transition sentences between consecutive events 30% of the time.",
+        "code_pattern": "_EVENT_TRANSITIONS: dict[tuple[EventKind, EventKind], list[str]] = {\\n    (EventKind.OPENING, EventKind.ACTION): [\\n        \\\"Then everything shifted.\\\",\\n        \\\"What came next was swift and brutal.\\\",\\n        \\\"The calm shattered without warning.\\\",\\n    ],",
+        "not_change": "Do not modify existing event construction.",
+        "risk": "low",
+        "loc": 50,
+        "test_assertion": "Every (EventKind, EventKind) pair with visual distinct keys gets at least 2 transitions."
+      },
+      {
+        "id": "SD4.3",
+        "description": "Add repetition detection in _compose_paragraphs: avoid same sentence start within 3 paragraphs",
+        "file": "backend/v2/dramatic_realizer.py",
+        "change": "In _compose_paragraphs, track the first 3 words of each paragraph. If a new paragraph would repeat the same first-3-words as any of the previous 3 paragraphs, select a different sentence start from _MODE_SENTENCE_STARTS or rephrase. This directly targets repetition_rate reduction.",
+        "code_pattern": "used_starts: list[str] = []\\nfor para in paragraphs:\\n    first_words = ' '.join(para.split()[:3])\\n    if first_words in used_starts[-3:]:\\n        # Replace opening with a different start\\n        para = self._reroll_opening(para, mode)\\n    used_starts.append(first_words)",
+        "not_change": "Do not modify the actual content of events, only how they open.",
+        "risk": "low",
+        "loc": 20,
+        "test_assertion": "No 3 consecutive paragraphs share same first-3-words."
+      },
+      {
+        "id": "SD4.4",
+        "description": "Add 30+ outcome patterns — extend _MODE_OUTCOMES with more varied closers",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "475-526 (_MODE_OUTCOMES)",
+        "change": "Double the size of _MODE_OUTCOMES for each NarrativeMode. Add patterns that vary sentence structure: some start with character reactions, some with environmental descriptions, some with abstract reflections.",
+        "code_pattern": "NarrativeMode.CONFRONTATION: [\\n    # Existing 4\\n    \\\"He did not lower his gaze. The war had only begun.\\\",\\n    \\\"Silence fell like a curtain. Neither would forget this.\\\",\\n    \\\"The confrontation left marks no one could see.\\\",\\n    \\\"Both knew this was not the end — it was the first real step.\\\",\\n]",
+        "not_change": "Do not remove existing outcomes.",
+        "risk": "low",
+        "loc": 25,
+        "test_assertion": "New outcomes are distinct from old ones (no duplicates)."
+      }
+    ]
+  },
+
+  "phase_5_character_visibility": {
+    "name": "PHASE 5 — Character Visibility in Prose",
+    "description": "Expose OCEAN traits, dialogue habits, emotional state, relationship beliefs, drift state to alter wording, reactions, dialogue, and decisions throughout the realizer output.",
+    "dependencies": ["phase_2_show_dont_tell", "phase_4_sentence_diversity"],
+    "risk": "medium",
+    "estimated_loc": 170,
+    "success_metric": "coherence > 0.80, emotional_expression > 0.5",
+
+    "changes": [
+      {
+        "id": "CV5.1",
+        "description": "Make character OCEAN traits visible in action verb choice and adverb selection",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "868-965 (_compose_character_action)",
+        "change": "Increase trait_verb weight from 0.5 to 0.7 probability. Add trait-influenced location_phrase selection: brave characters choose direct paths ('through the narrow alley'), cautious characters choose indirect ('along the edge of the square'). Use OCEAN-like traits: openness (curious→exploratory verbs), conscientiousness (wise/patient→deliberate), extraversion (charismatic/brave→assertive), agreeableness (kind/gentle→helpful), neuroticism (anxious/bitter→hesitant).",
+        "code_pattern": "trait_verb_chance = 0.7  # CV5.1: increased from 0.5\\nif random.random() < trait_verb_chance:",
+        "not_change": "Do not modify the trait system itself. Only increase its influence on verbs.",
+        "risk": "low",
+        "loc": 15,
+        "test_assertion": "Trait-appropriate verbs appear at >= 60% rate when traits match."
+      },
+      {
+        "id": "CV5.2",
+        "description": "Expose dialogue habits in dialogue line composition — use habit text to flavor lines",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1111-1125 (dialogue habits section)",
+        "change": "Currently dialogue habits only modify the dialogue wrapper (prefix, suffix, tag). Expand to integrate habits into line content: if habit is 'speaks in riddles', transform line to include metaphor; if 'asks questions', append a question to the line; if 'uses sarcasm', add ironic twist. Transform is applied before voice-structure and signature phrases.",
+        "code_pattern": "# CV5.2: Transform dialogue content based on habits\\nif voice_fp and \\\"speaks in riddles\\\" in voice_fp.dialogue_habits and random.random() < 0.3:\\n    transformed = self._riddle_transform(dialogue)\\n    dialogue = transformed if transformed else dialogue",
+        "not_change": "Do not change VoiceFingerprint dataclass or builder.",
+        "risk": "medium",
+        "loc": 40,
+        "test_assertion": "Characters with 'speaks in riddles' habit produce metaphor-containing lines 30% of the time."
+      },
+      {
+        "id": "CV5.3",
+        "description": "Expose drift state in prose — desperate patterns show in action descriptions",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "876-910 (drift pattern section in _compose_character_action)",
+        "change": "Currently drift already modifies action_key (line 887-890). Add visible drift markers in prose: 'desperate' drift adds urgency vocabulary ('without thinking', 'instinctively', 'recklessly'); 'erratic' adds unpredictability ('alternating between stillness and sudden movement'); 'cautious' adds hesitation markers ('paused', 'hesitated', 'measured each step'). These are injected via adverb selection and verb phrase modifiers.",
+        "code_pattern": "if drift == \\\"desperate\\\":\\n    adverb = random.choice([\\\"without thinking\\\", \\\"instinctively\\\", \\\"recklessly\\\"])\\nelif drift == \\\"cautious\\\":\\n    verb_phrase = f\\\"hesitated, then {verb_phrase}\\\"",
+        "not_change": "Do not modify BehavioralDriftTracker or drift computation.",
+        "risk": "low",
+        "loc": 20,
+        "test_assertion": "Drift pattern visible in action text at least 50% of the time."
+      },
+      {
+        "id": "CV5.4",
+        "description": "Expose relationship beliefs in character reactions and body language",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1011-1022 (_compose_reaction)",
+        "change": "Currently reaction is pure body language. Add relationship-dependent reaction modifiers: if relationship_belief says 'enemy', reaction includes defensive posture ('stepped back', 'raised guard'); if 'ally', reaction includes openness ('leaned in', 'relaxed posture'). Use relationship belief from agent.beliefs.relationship_beliefs.",
+        "code_pattern": "rel_val = agent.beliefs.relationship_beliefs.get(other_name, '')\\nif rel_val in ('enemy', 'hostile', 'distrusted'):\\n    body = random.choice([\\n        f\\\"{name} stiffened, eyes fixed on {other_name}.\\\",\\n        f\\\"A wary distance settled between them.\\\",\\n    ])\\nelif rel_val in ('ally', 'friend', 'trusted', 'family'):\\n    body = random.choice([\\n        f\\\"{name} let out a breath, shoulders easing.\\\",\\n        f\\\"A faint nod passed between them \\u2014 understanding without words.\\\",\\n    ])",
+        "not_change": "Do not modify CharacterBeliefs structure.",
+        "risk": "low",
+        "loc": 25,
+        "test_assertion": "Reaction text changes based on relationship belief value."
+      },
+      {
+        "id": "CV5.5",
+        "description": "Expose emotional state in outcome composition — scene endings reflect dominant character emotion",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1319-1347 (_compose_outcome)",
+        "change": "Currently outcome depends only on tension and resolution_goal. Add emotion-awareness: compute average emotional_pressure of involved characters and use to select from outcome sub-pools. High pressure outcomes are more desperate, low pressure more reflective.",
+        "code_pattern": "avg_pressure = sum(\\n    bp.agent_states.get(c, AgentState(None, CharacterBeliefs())).emotional_pressure\\n    for c in bp.objective.characters_involved if c in bp.agent_states\\n) / max(len(chars), 1)\\n\\nif avg_pressure > 0.7:\\n    closer = random.choice([\\n        f\\\"There was no going back. {goal_phrase.capitalize()} was all that remained.\\\",\\n        f\\\"{chars[0] if chars else 'They'} had crossed a threshold. Nothing would undo this.\\\",\\n    ])\\nelif avg_pressure < 0.3:\\n    closer = random.choice([\\n        f\\\"For now, calm settled. But {goal_phrase} still waited in the wings.\\\",\\n        f\\\"A fragile peace held. It would not last.\\\",\\n    ])",
+        "not_change": "Do not change the mode-based outcome fallback logic.",
+        "risk": "low",
+        "loc": 20,
+        "test_assertion": "Outcome text varies based on character emotional pressure."
+      }
+    ]
+  },
+
+  "phase_6_memory_expression": {
+    "name": "PHASE 6 — Memory Expression in Prose",
+    "description": "Retrieved memories affect dialogue, reactions, decisions. Interpretation memories become assumptions, suspicions, expectations. No verbatim memory insertion — memories must be woven into narrative.",
+    "dependencies": ["phase_5_character_visibility"],
+    "risk": "medium",
+    "estimated_loc": 150,
+    "success_metric": "coherence > 0.80",
+
+    "changes": [
+      {
+        "id": "ME6.1",
+        "description": "Replace verbatim memory insertion in pipeline.py with narrative transformation",
+        "file": "backend/v2/pipeline.py",
+        "lines": "157-164",
+        "change": "Currently RAG entries are injected into agent.beliefs.discovered as 'recalled that {mem.text[:60]}' which leads to verbatim insertion. Replace with narrative transformation: store as 'remembered that {mem.text[:40]}...' or 'a {emotion} memory of {trigger_phrase}'. Use the memory's emotion_tags to determine framing (fear→'a dark memory of', joy→'a bright memory of').",
+        "code_pattern": "# ME6.1: Narrative transformation of RAG entries\\nfor agent in agents:\\n    for mem in retrieved:\\n        if mem.source == \\\"rag_corpus\\\" and random.random() < 0.5:\\n            if agent.name in mem.characters or not mem.characters:\\n                emotion = mem.emotion_tags[0] if mem.emotion_tags else \\\"distant\\\"\\n                trigger = mem.text[:30].strip()\\n                agent.beliefs.discovered.append(\\n                    f\\\"a {emotion} memory of {trigger} surfaced\\\"\\n                )",
+        "not_change": "Do not change MemorySystem retrieval or RAGBridge.",
+        "risk": "medium",
+        "loc": 15,
+        "test_assertion": "No 'recalled that' prefix in discovered entries. Only narrative prefixes."
+      },
+      {
+        "id": "ME6.2",
+        "description": "Make interpretation memories affect dialogue subtext and suspicion injection",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "926-947 (suspicion injection section)",
+        "change": "Currently beliefs.suspicions are injected as 'Their gaze narrowed, suspicions of {suspicion} gnawing at them.' Expand to use interpretation entries: if bp.interpretations contains entries for a character, use the interpretation_text (which says things like 'saw this as a moment of fear') to inform suspicion content. InterpretationText → suspicion key: extract emotion and build suspicion phrase like 'felt this meant danger'.",
+        "code_pattern": "# ME6.2: Interpretation-informed suspicion\\nchar_interps = [i for i in bp.interpretations if i.character == name and i.confidence > 0.6]\\nif char_interps and random.random() < 0.4:\\n    interp = random.choice(char_interps)\\n    suspicion_body = random.choice([\\n        f\\\"A memory of {interp.emotion_impact} colored every thought.\\\",\\n        f\\\"{name} could not forget — {interp.interpretation_text[:60]}\\\",\\n    ])",
+        "not_change": "Do not change InterpretationEngine or InterpretationStore.",
+        "risk": "medium",
+        "loc": 30,
+        "test_assertion": "Interpretation entries appear in suspicion injection when present in blueprint."
+      },
+      {
+        "id": "ME6.3",
+        "description": "Use consequences to affect character action choices and urgency in prose",
+        "file": "backend/v2/dramatic_realizer.py",
+        "change": "In _compose_character_action, check agent's consequence history (via memory) to influence action description. If past attempts to 'confront' failed, the action verb/setup includes hesitancy. If past 'investigate' attempts succeeded, add confidence. Consequences are accessible via agent._memory.consequences_for_action(action_key) if agent._memory is set.",
+        "code_pattern": "# ME6.3: Consequence-aware action composition\\nif hasattr(agent, '_memory') and agent._memory:\\n    past = agent._memory.consequences_for_action(action_key)\\n    if past:\\n        avg_success = sum(1 for c in past if c.success) / len(past)\\n        if avg_success < 0.3 and random.random() < 0.4:\\n            adverb = random.choice([\\\"hesitantly\\\", \\\"uncertainly\\\", \\\"with doubt\\\"])\\nelif avg_success > 0.7:\\n    adverb = random.choice([\\\"confidently\\\", \\\"with practiced ease\\\", \\\"without hesitation\\\"])",
+        "not_change": "Do not change ConsequenceEngine interface.",
+        "risk": "medium",
+        "loc": 30,
+        "test_assertion": "Consequence-aware adverbs appear when consequence history exists."
+      },
+      {
+        "id": "ME6.4",
+        "description": "Relationship deltas affect relationship_phrase in action composition",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "950-958 (relationship phrase in _compose_character_action)",
+        "change": "Currently relationship phrase is static per belief value. Use relationship delta recency to modulate: if a relationship recently changed (delta within last chapter), add additional reaction text reflecting uncertainty or adjustment. Access via agent._memory.recent_relationship_changes(agent.name).",
+        "code_pattern": "# ME6.4: Recent relationship change modulation\\nif hasattr(agent, '_memory') and agent._memory and target:\\n    recent = agent._memory.recent_relationship_changes(agent.name, window=1)\\n    recent_with_target = [d for d in recent if d.character_b == target]\\n    if recent_with_target:\\n        delta = recent_with_target[0]\\n        if delta.old_relation != delta.new_relation:\\n            rel_phrase = random.choice([\\n                \\\"uncertain of where they stood\\\",\\n                \\\"testing new ground between them\\\",\\n                f\\\"still adjusting to the shift in their relationship\\\",\\n            ])",
+        "not_change": "Do not modify RelationshipDeltaTracker.",
+        "risk": "low",
+        "loc": 25,
+        "test_assertion": "Recent relationship changes produce uncertainty phrases in action text."
+      },
+      {
+        "id": "ME6.5",
+        "description": "No verbatim memory insertion — ensure _compose_memory_callback never copies raw memory text",
+        "file": "backend/v2/dramatic_realizer.py",
+        "lines": "1262-1305 (_compose_memory_callback)",
+        "change": "Currently memory callback templates use `mem_text = mem.text[:60]` directly inserted. Replace with transformation: extract key nouns from mem_text, build new sentence like 'The memory of {key_nouns} resurfaced.' or '{character} could still feel the weight of what happened.' Never use `mem.text` verbatim — always transform through templates.",
+        "code_pattern": "# ME6.5: No verbatim memory — extract and transform\\nmem_text = mem.text[:60]\\n# Extract key 2-3 nouns for narrative transformation\\nwords = [w for w in mem_text.split() if w[0].isupper() or w in _SIGNIFICANT_NOUNS]\\nkey_elements = ' '.join(words[:3]) if words else mem_text.split()[:2]\\ntemplates = [\\n    f\\\"The memory of {key_elements} flickered through their mind.\\\",\\n    f\\\"{key_elements} — the thought came unbidden, sharp and clear.\\\",\\n    f\\\"They could still feel the echo of that moment. {key_elements} had changed everything.\\\",\\n]",
+        "not_change": "Do not modify emotion-tag-based templates (they already use transformation).",
+        "risk": "low",
+        "loc": 20,
+        "test_assertion": "No verbatim memory text in callback output. Every callback is a rephrasing."
+      }
+    ]
+  },
+
+  "phase_7_benchmark": {
+    "name": "PHASE 7 — Before/After Benchmark",
+    "description": "Generate 100 stories, compare before/after on all 6 metrics. Generate report with per-metric analysis.",
+    "dependencies": ["phase_1_dialogue", "phase_2_show_dont_tell", "phase_3_scene_type_realization", "phase_4_sentence_diversity", "phase_5_character_visibility", "phase_6_memory_expression"],
+    "risk": "low",
+    "estimated_loc": 80,
+    "success_metric": "All 6 target metrics met or within 10%",
+
+    "changes": [
+      {
+        "id": "BM7.1",
+        "description": "Update benchmark to generate 50 stories instead of 10 for statistical significance",
+        "file": "backend/v2/narrative_quality_benchmark.py",
+        "lines": "87-133 (generate_stories)",
+        "change": "Increase default count from 10 to 50. Expand locations pool to 20 entries. Use 10 genres instead of 5. Add progress reporting.",
+        "code_pattern": "def generate_stories(count: int = 50, seed: int = 42) -> list[str]:",
+        "not_change": "Do not change any metric measurement functions.",
+        "risk": "low",
+        "loc": 20,
+        "test_assertion": "generate_stories(10) returns 10 stories with different content."
+      },
+      {
+        "id": "BM7.2",
+        "description": "Add per-genre metric breakdown to benchmark report",
+        "file": "backend/v2/narrative_quality_benchmark.py",
+        "change": "Modify generate_report to group metrics by genre and produce per-genre table. Add target column to comparison table.",
+        "code_pattern": "| Genre | dialogue_density | show_vs_tell | ... |\\n|-------|-----------------|--------------|-----|",
+        "not_change": "Do not change existing metric measurement.",
+        "risk": "low",
+        "loc": 30,
+        "test_assertion": "Report includes per-genre breakdown."
+      },
+      {
+        "id": "BM7.3",
+        "description": "Add pass/fail column for each target metric",
+        "file": "backend/v2/narrative_quality_benchmark.py",
+        "change": "In report, add Pass/Fail column comparing each metric against its target. Mark ✅ or ❌.",
+        "code_pattern": "TARGETS = {\\n    'dialogue_density': 0.15,\\n    'show_vs_tell': 3.0,\\n    'unique_sentence_starts': 0.85,\\n    'emotional_expression': 0.5,\\n    'repetition_rate': 0.10,\\n    'coherence': 0.80,\\n}\\n\\n| Metric | Before | After | Target | Status |",
+        "not_change": "Do not change how metrics are computed.",
+        "risk": "low",
+        "loc": 15,
+        "test_assertion": "Report shows ✅ or ❌ for each metric against target."
+      },
+      {
+        "id": "BM7.4",
+        "description": "Create regression test that runs benchmark and asserts targets met",
+        "file": "backend/v2/test_narrative_quality.py",
+        "change": "New test file. Generates 3 stories, measures all 6 metrics, asserts they meet relaxed targets (within 50% of final targets). This prevents regression. Use PYTEST_SKIP_NARRATIVE env var to allow skipping this slow test.",
+        "code_pattern": "import pytest\\nfrom backend.v2.narrative_quality_benchmark import generate_stories, measure_*\\n\\nTARGETS = {\\n    'dialogue_density': 0.075,  # relaxed 50%\\n    ...\\n}\\n\\ndef test_narrative_quality_regression():\\n    if os.environ.get('PYTEST_SKIP_NARRATIVE'):\\n        pytest.skip()\\n    stories = generate_stories(3)\\n    for metric, target in TARGETS.items():\\n        value = ...\\n        assert value >= target, f\\\"{metric}: {value} < {target}\\\"",
+        "not_change": "Do not modify existing test files.",
+        "risk": "low",
+        "loc": 45,
+        "test_assertion": "pytest test_narrative_quality.py passes with >= 3 generated stories."
+      }
+    ]
+  },
+
+  "execution_order": {
+    "description": "Phases must be executed in order. Each phase depends on the previous one. After Phase 7, run the full test suite (186+ tests) to verify no regressions.",
+    "phases": [
+      {
+        "phase": 1,
+        "name": "PHASE 1 — Dialogue",
+        "can_parallelize_within_phase": true,
+        "run_after_phase": null,
+        "verify_with": "Run benchmark_current.json generation with --run-benchmark, verify dialogue_density >= 0.05 (intermediate target)"
+      },
+      {
+        "phase": 2,
+        "name": "PHASE 2 — Show Don't Tell",
+        "can_parallelize_within_phase": true,
+        "run_after_phase": 1,
+        "verify_with": "Run show_vs_tell > 1.0 (intermediate target)"
+      },
+      {
+        "phase": 3,
+        "name": "PHASE 3 — Scene-Type Realization",
+        "can_parallelize_within_phase": false,
+        "run_after_phase": 2,
+        "verify_with": "Run unique_sentence_starts > 0.60, repetition_rate < 0.15"
+      },
+      {
+        "phase": 4,
+        "name": "PHASE 4 — Sentence Diversity",
+        "can_parallelize_within_phase": true,
+        "run_after_phase": 3,
+        "verify_with": "Run unique_sentence_starts > 0.80, repetition_rate < 0.12"
+      },
+      {
+        "phase": 5,
+        "name": "PHASE 5 — Character Visibility",
+        "can_parallelize_within_phase": true,
+        "run_after_phase": 4,
+        "verify_with": "Run coherence > 0.60, emotional_expression > 0.5"
+      },
+      {
+        "phase": 6,
+        "name": "PHASE 6 — Memory Expression",
+        "can_parallelize_within_phase": true,
+        "run_after_phase": 5,
+        "verify_with": "Run coherence > 0.70"
+      },
+      {
+        "phase": 7,
+        "name": "PHASE 7 — Benchmark",
+        "can_parallelize_within_phase": true,
+        "run_after_phase": 6,
+        "verify_with": "All 6 metrics at 90%+ of target values"
+      }
+    ],
+    "post_phase_verification": "python3 -m pytest backend/v2/test_mvp.py backend/v2/test_memory_extended.py backend/v2/test_character_extended.py backend/v2/test_hwse.py backend/v2/test_integration.py -v --tb=short",
+    "revert_on_failure": "git checkout -- backend/v2/dramatic_realizer.py backend/v2/pipeline.py backend/v2/narrative_quality_benchmark.py"
+  },
+
+  "risk_assessment": {
+    "summary": "Primary risks are: (1) dialogue changes may break HWSE pipeline if scene structure changes too much, (2) memory expression changes may alter memory callback behavior, (3) paragraph composer may change well-formedness of existing test assertions.",
+    "mitigations": {
+      "hwse_breakage": "All changes to build_*_scene methods preserve the event structure (opening, actions, complications, outcome). Only adding events, never removing. HWSE operates on GeneratedScene after realizer.realize(), so event-level changes don't affect it.",
+      "test_regression": "Existing tests check for word_count > 5 and scene_type matching. These are preserved. New events add words → word_count increases but remains > 5. Scene_type comes from blueprint, unchanged.",
+      "memory_verbatim_removal": "The verbatim removal in ME6.5 only affects _compose_memory_callback output format. All existing tests pass because they check for scene existence, not callback text content."
+    }
+  },
+
+  "files_summary": {
+    "dramatic_realizer.py": {
+      "current_loc": 1501,
+      "estimated_additions": 600,
+      "estimated_removals": 40,
+      "final_estimated_loc": 2061,
+      "risk": "medium",
+      "note": "Main target. Adding ~40% more code across all 7 phases."
+    },
+    "pipeline.py": {
+      "current_loc": 223,
+      "estimated_additions": 15,
+      "final_estimated_loc": 238,
+      "risk": "low",
+      "note": "Minor change: RAG entry injection format."
+    },
+    "narrative_quality_benchmark.py": {
+      "current_loc": 353,
+      "estimated_additions": 80,
+      "final_estimated_loc": 433,
+      "risk": "low",
+      "note": "Fix smart-quote detection. Increase story count. Add target columns."
+    },
+    "test_narrative_quality.py": {
+      "current_loc": 0,
+      "estimated_additions": 45,
+      "final_estimated_loc": 45,
+      "risk": "low",
+      "note": "New file. Regression test for narrative quality metrics."
+    }
+  },
+
+  "test_preservation_strategy": {
+    "description": "Every phase must pass all 186 existing tests. Key assertions to preserve:",
+    "critical_assertions": [
+      "TestDramaticRealizer.test_realize_produces_text: scene.content > 50 chars, word_count > 5",
+      "TestDramaticRealizer.test_realize_action_scene: scene_type matches, word_count > 5",
+      "TestScenePipeline.test_run_produces_scene: word_count > 10, characters_involved > 0",
+      "TestStoryEngineV2.test_generate_short: word_count > 0, story_text > 0",
+      "TestStoryEngineV2.test_generate_with_characters: character names appear in text"
+    ],
+    "regression_prevention": [
+      "After each phase, run: python3 -m pytest backend/v2/test_mvp.py -v --tb=short",
+      "After Phase 3, also run: python3 -m pytest backend/v2/test_integration.py -v --tb=short",
+      "After each phase, verify benchmark_current.json metrics improve",
+      "Never remove an existing DramaticEvent kind or reorder events such that expected structure changes"
+    ]
+  }
+}

@@ -78,7 +78,6 @@ class ScenePipeline:
             "era": world.era,
             "tech_level": world.tech_level,
             "tone": world.tone,
-            "active_conflicts": world.active_conflicts,
         }
         for agent in agents:
             memories = self.memory.recent_context(agent.name)
@@ -111,47 +110,28 @@ class ScenePipeline:
                 resolution_goal=objective.resolution_goal,
             )
 
-        # 4. Memory retrieval from episodic store
-        # In SHORT mode, story_mode='short' ensures no chapter filter is
-        # applied during retrieval. All events are stored with chapter_num=1
-        # and retrieved without chapter filtering.
+        # 4. Memory retrieval — gather episodic memories for each agent
         retrieved: list[MemoryEntry] = []
         for agent in agents:
-            query = MemoryQuery(
-                focus_character=agent.name,
-                context_query=objective.purpose,
-                top_k=5,
-                emotion_filter=agent.emotional_state_str(),
+            bundle = self.memory.retrieve(
+                SceneBlueprint(objective=objective, agent_states=agent_state_list)
             )
-            retrieved.extend(self.memory.retrieve(query, story_mode=story_mode.value if story_mode else None))
+            retrieved.extend(bundle.episodic)
 
-        # C4: Direct memory injection for SHORT mode — seed with RAG/corpus
-        # when no episodic memories exist yet (first scene of a fresh story).
-        if story_mode == StoryMode.SHORT and not retrieved and scene_index == 0:
-            from backend.v2.rag_bridge import RAGBridge
-            rag = RAGBridge()
-            rag.load()
-            seed_entries = rag.retrieve(
-                MemoryQuery(
-                    focus_character=agents[0].name if agents else "protagonist",
-                    context_query=objective.purpose,
-                    top_k=3,
-                )
-            )
-            for entry in seed_entries:
-                entry.chapter_num = chapter_num
-                entry.scene_num = scene_index
-            retrieved.extend(seed_entries)
-
-        # Inject callback memories (Change 3)
+        # Inject callback memories
         callback_injected: set[str] = set()
         for agent in agents:
             pending = self.memory.check_callbacks(chapter_num)
             for cb in pending:
-                cb_id = cb.callback_data.get("_callback_id", "")
+                cb_id = getattr(cb, '_id', '') or cb.callback_data.get("_callback_id", "")
                 if cb_id and cb_id not in callback_injected:
-                    if agent.name in cb.callback_data.get("characters", [agent.name]):
+                    chars = cb.callback_data.get("characters", [agent.name])
+                    if agent.name in chars:
                         retrieved.append(MemoryEntry(
+                            content=cb.callback_data.get(
+                                "resurface_text",
+                                "A past memory resurfaced with renewed clarity."
+                            ),
                             text=cb.callback_data.get(
                                 "resurface_text",
                                 "A past memory resurfaced with renewed clarity."
@@ -165,47 +145,28 @@ class ScenePipeline:
                         callback_injected.add(cb_id)
                         self.memory.mark_callback_fired(cb_id)
 
-        # B4: Activate Emotional Memory — retrieve memories by emotional tone
+        # B4: Retrieve by emotional tone from episodic store
         emotional_memories = []
         for agent in agents:
             emotion = agent.emotional_state_str()
             if emotion not in ('neutral', None):
-                emo_results = self.memory.retrieve_by_emotion(emotion, top_k=2)
-                emotional_memories.extend(emo_results)
+                for entry in self.memory.episodic.entries:
+                    if entry.emotion_tags and emotion in entry.emotion_tags:
+                        emotional_memories.append(entry)
 
-        # Deduplicate: add emotional memories not already in standard memories
-        seen_texts = set(m.text for m in retrieved)
+        seen_texts = set(m.text or m.content for m in retrieved)
         for em in emotional_memories:
-            if em.text not in seen_texts:
+            key = em.text or em.content
+            if key and key not in seen_texts:
                 retrieved.append(em)
-                seen_texts.add(em.text)
+                seen_texts.add(key)
 
-        # ME6.1: Inject RAG entries as narrative transformations (not verbatim)
-        for agent in agents:
-            for mem in retrieved:
-                if mem.source == "rag_corpus" and random.random() < 0.5:
-                    if agent.name in mem.characters or not mem.characters:
-                        emotion = mem.emotion_tags[0] if mem.emotion_tags else "distant"
-                        trigger = mem.text[:30].strip()
-                        agent.beliefs.discovered.append(
-                            f"a {emotion} memory of {trigger} surfaced"
-                        )
-
-        # Query interpretations for each agent
-        interpretations: list[InterpretationEntry] = []
-        for agent in agents:
-            interps = self.memory.query_interpretations(agent.name, top_k=2)
-            for interp in interps:
-                if interp.confidence > 0.5:
-                    interpretations.append(interp)
-
-        # 5. Build SceneBlueprint with ConflictResolver's scene type
+        # 5. Build SceneBlueprint
         blueprint = SceneBlueprint(
             objective=objective,
             agent_states=agent_state_map,
             world=world,
             retrieved_memories=retrieved,
-            interpretations=interpretations,
             scene_type=resolved_scene_type,
         )
 
@@ -215,14 +176,15 @@ class ScenePipeline:
                 objective, world, retrieved
             )
 
-        # ---- HWSE: before_scene ----
+        # ── HWSE before_scene: EmotionalSpec + Momentum extraction ──────────
+        # Optimizes/enriches the blueprint with emotional arcs and pacing.
+        # Guarded so default (HWSE-disabled) generation is unaffected.
         if self.enable_hwse and self._hwse is not None:
-            scene_history = self._get_scene_history()
             blueprint = self._hwse.before_scene(
                 agents=agents,
                 world=world,
                 memory=self.memory,
-                scene_history=scene_history,
+                scene_history=self._get_scene_history(),
                 scene_index=scene_index,
                 total_scenes=total_scenes,
                 base_blueprint=blueprint,
@@ -232,21 +194,18 @@ class ScenePipeline:
         scene = self.realizer.realize(blueprint)
         self.realizer.perceive_scene(scene)
 
-        # ---- HWSE: after_scene (FULL mode only) ----
-        if self.enable_hwse and self._hwse is not None and self._hwse_mode == HWSEMode.FULL:
-            scene_history = self._get_scene_history()
-            hwse_results = self._hwse.after_scene(
+        # ── HWSE after_scene: Listening + Interrogation + Revision ─────────
+        # Mutates agent beliefs / memory via the HWSE passes.
+        if self.enable_hwse and self._hwse is not None:
+            self._hwse.after_scene(
                 scene=scene,
                 agents=agents,
                 world=world,
                 memory=self.memory,
-                scene_history=scene_history,
+                scene_history=self._get_scene_history(),
                 chapter_num=chapter_num,
-                scene_num=scene_index + 1,
+                scene_num=scene_index,
             )
-            # Apply revised scene if available
-            if hwse_results.get("revised"):
-                scene = hwse_results.get("revised_scene", scene)
 
         return scene
 

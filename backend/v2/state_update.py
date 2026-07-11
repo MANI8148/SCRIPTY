@@ -14,6 +14,15 @@ from backend.v2.types import (
 )
 
 
+# Perception/action verbs that signal a belief-forming moment in scene text.
+_BELIEF_VERBS = (
+    "discovered", "realized", "saw", "found", "learned", "understood",
+    "recognized", "noticed", "remembered", "decided", "knew", "observed",
+    "felt", "heard", "believed", "suspected", "watched", "witnessed",
+    "uncovered", "grasped",
+)
+
+
 class StateUpdater:
     """Updates character beliefs, memory, and emotional state after each scene.
 
@@ -84,7 +93,8 @@ class StateUpdater:
         if agents:
             for agent in agents:
                 if agent.name in scene.characters_involved:
-                    for fact_entry in memory.semantic.facts[-5:]:
+                    all_facts = list(memory.semantic.facts.values())
+                    for fact_entry in all_facts[-5:]:
                         if fact_entry.characters and fact_entry.characters[0] == agent.name:
                             agent.beliefs.discovered.append(
                                 f"understood that {fact_entry.text[:80]}"
@@ -250,7 +260,39 @@ class StateUpdater:
                     )
 
     def _update_beliefs(self, agent: CharacterAgent, scene: GeneratedScene) -> None:
-        pass
+        """Extract belief entries from scene content.
+
+        Scans the scene text for sentences that mention the agent's name
+        together with a perception/action verb (discovered, realized, saw,
+        found, learned, ...). Each such sentence becomes a belief recorded in
+        ``agent.beliefs.discovered``. When another involved character is also
+        named in the same sentence, a relationship belief is captured so the
+        realizer can read interpersonal state when composing later scenes.
+        """
+        if agent.name not in scene.characters_involved:
+            return
+
+        text = scene.content or ""
+        seen: set[str] = set(agent.beliefs.discovered)
+
+        for sentence in text.split("."):
+            s = sentence.strip().strip(",").strip().strip(".").strip()
+            if not s or agent.name not in s:
+                continue
+            if not any(verb in s.lower() for verb in _BELIEF_VERBS):
+                continue
+
+            belief = s[:160]
+            if belief and belief not in seen:
+                agent.beliefs.discovered.append(belief)
+                seen.add(belief)
+
+            # Co-mentioned character -> relationship belief
+            for other in scene.characters_involved:
+                if other != agent.name and other in s:
+                    agent.beliefs.relationship_beliefs[other] = (
+                        f"observed {other}: {s[:80]}"
+                    )
 
     def _update_emotional_pressure(
         self,
@@ -273,6 +315,6 @@ class StateUpdater:
         self, agent: CharacterAgent, scene: GeneratedScene
     ) -> None:
         if agent.emotional_pressure > 0.8:
-            agent.character.arc_phase = type(agent.character.arc_phase).PEAK
+            agent.character.arc_phase = "peak"
         elif agent.emotional_pressure < 0.2:
-            agent.character.arc_phase = type(agent.character.arc_phase).RESOLUTION
+            agent.character.arc_phase = "resolution"

@@ -1,126 +1,136 @@
-"""Modulates token probability distributions by character OCEAN traits.
-
-Provides deterministic probability adjustments so that characters
-with different personalities produce measurably different text.
 """
-
+SCRIPTY v2 — VoiceAdapter
+Modulates token probability distributions by character OCEAN personality traits.
+High openness -> broader vocabulary
+High extraversion -> more active verbs
+Default modulation strength: 10% (configurable)
+"""
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass
 from typing import Any
+
+from backend.v2.types import CharacterRecord
+
+
+@dataclass
+class VoiceFingerprint:
+    """Deterministic voice profile derived from OCEAN traits."""
+    formality: float = 0.5
+    vocabulary_complexity: float = 0.5
+    verbosity: float = 0.5
+    emotional_expressiveness: float = 0.5
+    directness: float = 0.5
+    active_verb_preference: float = 0.5
+    sentence_length_pref: float = 0.5
+
+    @classmethod
+    def from_ocean(cls, ocean: dict[str, float]) -> "VoiceFingerprint":
+        openness = ocean.get("openness", 0.5)
+        conscientiousness = ocean.get("conscientiousness", 0.5)
+        extraversion = ocean.get("extraversion", 0.5)
+        agreeableness = ocean.get("agreeableness", 0.5)
+        neuroticism = ocean.get("neuroticism", 0.5)
+
+        return cls(
+            formality=0.3 + 0.4 * conscientiousness,
+            vocabulary_complexity=0.3 + 0.5 * openness,
+            verbosity=0.3 + 0.4 * extraversion,
+            emotional_expressiveness=0.2 + 0.6 * (1 - neuroticism),
+            directness=0.3 + 0.4 * (1 - agreeableness),
+            active_verb_preference=0.3 + 0.5 * extraversion,
+            sentence_length_pref=0.3 + 0.4 * openness,
+        )
 
 
 class VoiceAdapter:
-    """Modulates token probabilities based on character voice fingerprints.
-
-    Maps VoiceFingerprint fields (vocabulary_level, speech_rhythm,
-    sentence_tendency, formality, emotional_leakage) to token-level
-    probability adjustments.
-
-    Modulation strength defaults to 10% and is configurable.
+    """
+    Modulates token probability distributions by character voice fingerprint.
+    Applied during token-by-token generation in HybridGenerator.
     """
 
-    def __init__(self, modulation_strength: float = 0.1) -> None:
-        self.strength = modulation_strength
+    MODULATION_STRENGTH = 0.10  # 10% default
 
-    def modulate_distribution(
-        self,
-        tokens: list[str],
-        probabilities: list[float],
-        voice_fingerprint: dict[str, Any],
-    ) -> list[float]:
-        """Adjust token probabilities according to character voice.
+    def __init__(self, modulation_strength: float = 0.10):
+        self.modulation_strength = modulation_strength
+        self._active_verbs = {
+            "grabbed", "sprinted", "shouted", "demanded", "seized", "charged",
+            "confronted", "pursued", "attacked", "defended", "raced", "lunged"
+        }
+        self._passive_verbs = {
+            "was", "were", "had", "felt", "seemed", "appeared", "became",
+            "remained", "stayed", "waited", "watched", "observed", "listened"
+        }
+        self._complex_words = {
+            "nevertheless", "furthermore", "consequently", "subsequently",
+            "nevertheless", "moreover", "accordingly", "simultaneously"
+        }
 
-        Args:
-            tokens: Candidate tokens to choose from.
-            probabilities: Corresponding base probabilities.
-            voice_fingerprint: Dict from CharacterAgent.voice_fingerprint().
+    def modulate(self, prob_dist: dict[str, float], fingerprint: VoiceFingerprint) -> dict[str, float]:
+        """Apply voice modulation to probability distribution."""
+        if not prob_dist:
+            return prob_dist
 
-        Returns:
-            Adjusted probability distribution (same length, sums to 1).
-        """
-        if not tokens or not probabilities:
-            return probabilities
+        modulated = dict(prob_dist)
+        vocab = list(modulated.keys())
 
-        probs = list(probabilities)
-        vocab = voice_fingerprint.get("vocabulary_level", "moderate")
-        formality = voice_fingerprint.get("formality", 0.5)
+        for token in vocab:
+            base_prob = modulated[token]
+            multiplier = 1.0
 
-        for i, token in enumerate(tokens):
-            if vocab == "sophisticated" or vocab == "archaic":
-                if self._is_sophisticated(token):
-                    probs[i] *= 1.0 + self.strength
-                if self._is_simple(token):
-                    probs[i] *= 1.0 - self.strength * 0.5
-            elif vocab == "simple":
-                if self._is_simple(token):
-                    probs[i] *= 1.0 + self.strength
-                if self._is_sophisticated(token):
-                    probs[i] *= 1.0 - self.strength
+            token_lower = token.lower()
 
-            if formality > 0.7:
-                if self._is_formal(token):
-                    probs[i] *= 1.0 + self.strength
-                if self._is_informal(token):
-                    probs[i] *= 1.0 - self.strength
-            elif formality < 0.3:
-                if self._is_informal(token):
-                    probs[i] *= 1.0 + self.strength
-                if self._is_formal(token):
-                    probs[i] *= 1.0 - self.strength
+            if fingerprint.active_verb_preference > 0.6 and token_lower in self._active_verbs:
+                multiplier += self.modulation_strength * fingerprint.active_verb_preference
+            elif fingerprint.active_verb_preference < 0.4 and token_lower in self._passive_verbs:
+                multiplier += self.modulation_strength * (1 - fingerprint.active_verb_preference)
 
-            if self._is_active_verb(token):
-                extraversion = voice_fingerprint.get("extraversion", 0.5)
-                if extraversion > 0.6:
-                    probs[i] *= 1.0 + self.strength * 0.5
-                elif extraversion < 0.4:
-                    probs[i] *= 1.0 - self.strength * 0.5
+            if fingerprint.vocabulary_complexity > 0.6 and token_lower in self._complex_words:
+                multiplier += self.modulation_strength * fingerprint.vocabulary_complexity
 
-        total = sum(probs)
+            if fingerprint.formality > 0.6 and token_lower in {"gonna", "wanna", "gotta", "yeah", "nah"}:
+                multiplier *= 0.5
+            elif fingerprint.formality < 0.4 and token_lower in {"however", "therefore", "furthermore"}:
+                multiplier *= 0.7
+
+            modulated[token] = base_prob * multiplier
+
+        total = sum(modulated.values())
         if total > 0:
-            probs = [p / total for p in probs]
-        return probs
+            modulated = {k: v / total for k, v in modulated.items()}
 
-    def _is_sophisticated(self, token: str) -> bool:
-        token_lower = token.lower()
-        return token_lower in {
-            "therefore", "nevertheless", "consequently", "accordingly",
-            "furthermore", "moreover", "notwithstanding", "wherein",
-            "whereby", "hitherto", "thenceforth", "thereupon",
-            "melancholy", "magnificent", "extraordinary", "remarkable",
-            "contemplated", "endeavored", "perceive", "comprehend",
-            "benevolent", "malevolent", "predestined", "ineffable",
-        }
+        return modulated
 
-    def _is_simple(self, token: str) -> bool:
-        token_lower = token.lower()
-        return token_lower in {
-            "good", "bad", "big", "small", "nice", "mean",
-            "go", "get", "do", "say", "make", "take", "come",
-            "see", "know", "got", "went", "thing", "stuff",
-            "yeah", "nope", "okay", "fine", "sure", "well",
-        }
+    def adapt_sentence(self, sentence: str, fingerprint: VoiceFingerprint) -> str:
+        """Post-generation adaptation of sentence structure."""
+        words = sentence.split()
 
-    def _is_formal(self, token: str) -> bool:
-        token_lower = token.lower()
-        return token_lower in {
-            "shall", "ought", "must", "indeed", "quite",
-            "sir", "madam", "pardon", "apologies",
-            "request", "require", "instruct", "direct",
-        }
+        if fingerprint.verbosity > 0.7 and len(words) < 10:
+            pass
 
-    def _is_informal(self, token: str) -> bool:
-        token_lower = token.lower()
-        return token_lower in {
-            "gonna", "wanna", "gotta", "ain't", "y'all",
-            "yeah", "nah", "c'mon", "dunno", "kinda",
-            "sorta", "lot", "guy", "dude", "pal",
-        }
+        if fingerprint.directness > 0.7:
+            sentence = sentence.replace("it seems that ", "").replace("it appears that ", "")
 
-    def _is_active_verb(self, token: str) -> bool:
-        token_lower = token.lower()
-        return token_lower in {
-            "ran", "fought", "charged", "struck", "grabbed",
-            "pushed", "pulled", "threw", "kicked", "hit",
-            "dashed", "sprinted", "leaped", "seized", "smashed",
-            "attacked", "advanced", "lunged", "rushed", "broke",
-        }
+        return sentence
+
+
+class VoiceAdapterPool:
+    """Manages voice fingerprints for multiple characters."""
+
+    def __init__(self):
+        self._fingerprints: dict[str, VoiceFingerprint] = {}
+
+    def register(self, character: CharacterRecord) -> VoiceFingerprint:
+        ocean = character.ocean or {}
+        fp = VoiceFingerprint.from_ocean(ocean)
+        self._fingerprints[character.name] = fp
+        return fp
+
+    def get(self, character_name: str) -> Optional[VoiceFingerprint]:
+        return self._fingerprints.get(character_name)
+
+    def get_or_create(self, character: CharacterRecord) -> VoiceFingerprint:
+        if character.name not in self._fingerprints:
+            return self.register(character)
+        return self._fingerprints[character.name]

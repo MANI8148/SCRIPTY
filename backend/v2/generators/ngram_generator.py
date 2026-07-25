@@ -182,8 +182,24 @@ class NGramGenerator(TextGenerator):
     @classmethod
     def load(cls, path: str | Path) -> "NGramGenerator":
         """Load model from pickle. Supports both NLTK and fast formats."""
+        import importlib
+        import io
+
+        _CLASS_MAP = {
+            "__main__.FastNgram": "backend.v2.generators.fast_ngram.FastNgram",
+        }
+
+        class _Unpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                key = f"{module}.{name}"
+                if key in _CLASS_MAP:
+                    mod_path, cls_name = _CLASS_MAP[key].rsplit(".", 1)
+                    mod = importlib.import_module(mod_path)
+                    return getattr(mod, cls_name)
+                return super().find_class(module, name)
+
         with open(path, "rb") as f:
-            data = pickle.load(f)
+            data = _Unpickler(f).load()
         gen = cls(order=data["order"], temperature=data.get("temperature", 0.8))
         gen.vocabulary = data.get("vocabulary", {})
         gen.model = data.get("model")

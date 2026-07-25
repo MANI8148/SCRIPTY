@@ -157,13 +157,13 @@ def _generate_v2(args: dict) -> tuple:
     mode_map = {"short": V2StoryMode.SHORT, "chapter": V2StoryMode.CHAPTER, "book": V2StoryMode.BOOK}
     v2_mode = mode_map.get(mode_str, V2StoryMode.SHORT)
     req = GenerationRequest(
-        location=args.get("location_name", "London"),
+        location=args.get("location", "London"),
         year=args.get("year", 1850),
         story_mode=v2_mode,
-        genre=args.get("genre"),
-        theme=args.get("theme"),
-        characters=args.get("characters"),
-        num_chapters=args.get("chapter_count", 1),
+        genre=args.get("genre", "Historical Fiction"),
+        theme=args.get("theme", ""),
+        characters=args.get("characters", []),
+        chapter_count=args.get("chapter_count", 1),
     )
     v2 = _get_v2_engine()
     result = asyncio.run(v2.generate(req))

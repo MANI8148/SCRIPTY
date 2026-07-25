@@ -205,6 +205,11 @@ class NGramGenerator(TextGenerator):
         gen.model = data.get("model")
         gen._fast_counter = data.get("_fast_counter")
         gen._use_fast = data.get("_use_fast", gen._fast_counter is not None)
+        if gen._use_fast and gen._fast_counter is not None:
+            try:
+                gen._fast_counter.precompute()
+            except Exception:
+                gen._fast_counter.build_arrays()
         return gen
 
     def generate(self, blueprint: SceneBlueprint) -> GeneratedScene:

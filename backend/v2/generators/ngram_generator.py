@@ -1,7 +1,7 @@
 """
 SCRIPTY v2 — NGramGenerator
-5-gram language model with Kneser-Ney smoothing.
-Trained on Gutenberg corpus (~2.7M lines).
+8-gram language model with Kneser-Ney smoothing.
+Supports both NLTK-trained models and fast numpy-trained models.
 """
 from __future__ import annotations
 
@@ -12,8 +12,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-from nltk.lm import KneserNeyInterpolated
-from nltk.lm.preprocessing import padded_everygram_pipeline
 
 from backend.v2.generators.base import TextGenerator
 from backend.v2.types import SceneBlueprint, GeneratedScene
@@ -25,26 +23,31 @@ def _tokenize(text: str) -> list[str]:
 
 class NGramGenerator(TextGenerator):
     """
-    5-gram Kneser-Ney language model for token-by-token generation.
-    Supports save/load via pickle.
+    N-gram Kneser-Ney language model for token-by-token generation.
+    Supports save/load via pickle. Works with both NLTK and fast counters.
     """
 
     def __init__(
         self,
-        order: int = 5,
+        order: int = 8,
         temperature: float = 0.8,
         model_path: Optional[str] = None
     ):
         self.order = order
         self.temperature = temperature
-        self.model: Optional[KneserNeyInterpolated] = None
+        self.model = None  # NLTK KneserNeyInterpolated (legacy)
+        self._fast_counter = None  # FastNgramCounter (new)
         self.vocabulary: dict[str, int] = {}
+        self._use_fast = False
 
         if model_path:
             self.load(model_path)
 
     def train(self, sentences: list[list[str]], vocabulary: Optional[list[str]] = None) -> None:
-        """Train the Kneser-Ney model on tokenized sentences."""
+        """Train using NLTK (slow, legacy)."""
+        from nltk.lm import KneserNeyInterpolated
+        from nltk.lm.preprocessing import padded_everygram_pipeline
+
         if vocabulary:
             self.vocabulary = {w: i for i, w in enumerate(vocabulary)}
         else:
@@ -57,6 +60,7 @@ class NGramGenerator(TextGenerator):
         train_data, padded_sents = padded_everygram_pipeline(self.order, sentences)
         self.model = KneserNeyInterpolated(self.order)
         self.model.fit(train_data, padded_sents)
+        self._use_fast = False
 
     def generate_tokens(
         self,
@@ -71,17 +75,54 @@ class NGramGenerator(TextGenerator):
         probability distribution (a dict mapping token -> raw prob) before
         sampling, enabling voice/personality modulation of the output.
         """
-        if self.model is None:
+        temp = temperature if temperature is not None else self.temperature
+
+        # Use fast counter if available, else NLTK
+        if self._use_fast and self._fast_counter is not None:
+            return self._generate_fast(seed, max_tokens, temp, modulate_fn)
+        elif self.model is not None:
+            return self._generate_nltk(seed, max_tokens, temp, modulate_fn)
+        else:
             raise RuntimeError("Model not trained or loaded")
 
-        temp = temperature if temperature is not None else self.temperature
+    def _generate_fast(
+        self, seed, max_tokens, temp, modulate_fn
+    ) -> list[str]:
+        """Generate using the fast numpy counter."""
+        counter = self._fast_counter
+        context = list(seed) if seed else ["<s>"] * (self.order - 1)
+        tokens = list(context)
+
+        for _ in range(max_tokens):
+            ctx = tuple(context[-(self.order - 1):])
+            probs = counter.get_vocab_probs(ctx, temp)
+            if not probs:
+                break
+
+            if modulate_fn is not None:
+                probs = modulate_fn(probs)
+
+            words = list(probs.keys())
+            scores = np.array(list(probs.values()))
+            scores = scores / scores.sum()
+
+            next_token = np.random.choice(words, p=scores)
+            tokens.append(next_token)
+            context.append(next_token)
+
+            if next_token in {".", "!", "?"}:
+                if len(tokens) > 20:
+                    break
+
+        return tokens
+
+    def _generate_nltk(
+        self, seed, max_tokens, temp, modulate_fn
+    ) -> list[str]:
+        """Generate using NLTK model (legacy)."""
         context = tuple(seed) if seed else tuple(["<s>"] * (self.order - 1))
         tokens = list(context[-(self.order-1):]) if context else []
 
-        # Score the most frequent vocabulary entries (frequency-ranked) rather
-        # than the first 1000 insertion-order entries. Higher order models
-        # have large vocabularies; ranking by frequency keeps the common,
-        # high-probability words in scope so generation does not collapse.
         if not hasattr(self, "_freq_vocab"):
             self._freq_vocab = sorted(
                 self.vocabulary.items(), key=lambda kv: kv[1], reverse=True
@@ -127,29 +168,31 @@ class NGramGenerator(TextGenerator):
 
     def save(self, path: str | Path) -> None:
         """Serialize model to pickle."""
-        if self.model is None:
-            raise RuntimeError("No model to save")
         data = {
             "order": self.order,
             "temperature": self.temperature,
             "vocabulary": self.vocabulary,
             "model": self.model,
+            "_fast_counter": self._fast_counter,
+            "_use_fast": self._use_fast,
         }
         with open(path, "wb") as f:
             pickle.dump(data, f)
 
     @classmethod
     def load(cls, path: str | Path) -> "NGramGenerator":
-        """Load model from pickle."""
+        """Load model from pickle. Supports both NLTK and fast formats."""
         with open(path, "rb") as f:
             data = pickle.load(f)
         gen = cls(order=data["order"], temperature=data.get("temperature", 0.8))
-        gen.vocabulary = data["vocabulary"]
-        gen.model = data["model"]
+        gen.vocabulary = data.get("vocabulary", {})
+        gen.model = data.get("model")
+        gen._fast_counter = data.get("_fast_counter")
+        gen._use_fast = data.get("_use_fast", gen._fast_counter is not None)
         return gen
 
     def generate(self, blueprint: SceneBlueprint) -> GeneratedScene:
-        """Generate a scene using n-gram model (fallback)."""
+        """Generate a scene using n-gram model."""
         seed_tokens = _tokenize(blueprint.preceding_context)[-4:]
         tokens = self.generate_tokens(seed=seed_tokens, max_tokens=300)
         text = " ".join(tokens).replace(" .", ".").replace(" ,", ",").replace(" !", "!").replace(" ?", "?")

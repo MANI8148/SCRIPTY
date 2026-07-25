@@ -4,7 +4,7 @@ import os
 import time
 
 from backend.v2.character_agent import CharacterAgent
-from backend.v2.config import get_generation_backend, get_hwse_mode, is_hwse_enabled
+from backend.v2.config import get_hwse_mode, is_hwse_enabled
 from backend.v2.dramatic_realizer import DramaticRealizer
 from backend.v2.generators.base import TextGenerator
 from backend.v2.generators.hybrid_generator import HybridGenerator
@@ -98,76 +98,48 @@ class StoryEngineV2:
         self._hwse = hwse_pipeline or (HWSEPipeline() if enable_hwse else None)
         self._hwse_mode = get_hwse_mode()
 
-        # Build TextGenerator based on GENERATION_BACKEND
-        backend = get_generation_backend()
+        # Build TextGenerator — n-gram only (8-gram preferred, 5-gram fallback)
         self.generator = generator
         if self.generator is None:
             _project = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            model_path = os.path.join(_project, "models", "mlx_transformer.pkl")
-            if backend == "torch":
+            model_path = os.path.join(_project, "models", "ngram_5gram.pkl")
+            model_path_full = os.path.join(_project, "models", "ngram_5gram_full.pkl")
+            model_path_8 = os.path.join(_project, "models", "ngram_8gram.pkl")
+            ngram = None
+            # Try each candidate; skip corrupt/truncated pickle files.
+            # 8-gram is preferred when present (higher-order coherence).
+            for cand in (model_path_8, model_path, model_path_full):
+                if os.path.exists(cand):
+                    try:
+                        ngram = NGramGenerator.load(cand)
+                        print(f"Loaded n-gram model from {cand}")
+                        break
+                    except Exception as load_err:
+                        print(f"Skipping corrupt model {cand}: {load_err}")
+                        ngram = None
+            if ngram is None:
+                # Train a small on-the-fly model if no valid model exists
+                ngram = NGramGenerator(order=5, temperature=0.85)
+                from backend.v2.generators.corpus_loader import CorpusLoader
+                loader = CorpusLoader(
+                    os.path.join(_project, "data", "gutenberg")
+                )
+                sentences = loader.iter_sentences(max_files=10)
+                ngram.train(sentences)
+                # Persist so subsequent runs are fast
                 try:
-                    from backend.v2.generators.torch_model import TorchTransformerGenerator
-                    if os.path.exists(model_path):
-                        self.generator = TorchTransformerGenerator.load(model_path)
-                    else:
-                        print(f"Torch model not found at {model_path}")
-                        self.generator = None
-                except Exception as e:
-                    print(f"Failed to load torch transformer: {e}")
-                    self.generator = None
-            elif backend == "mlx_transformer":
-                try:
-                    from backend.v2.generators.mlx_model import MLXTransformerGenerator
-                    if os.path.exists(model_path):
-                        self.generator = MLXTransformerGenerator.load(model_path)
-                    else:
-                        print(f"MLX model not found at {model_path}, falling back to hybrid")
-                        self.generator = None
-                except Exception as e:
-                    print(f"Failed to load MLX transformer: {e}, falling back")
-                    self.generator = None
-            elif backend == "hybrid":
-                try:
-                    model_path = os.path.join(_project, "models", "ngram_5gram.pkl")
-                    model_path_full = os.path.join(_project, "models", "ngram_5gram_full.pkl")
-                    model_path_8 = os.path.join(_project, "models", "ngram_8gram.pkl")
-                    ngram = None
-                    # Try each candidate; skip corrupt/truncated pickle files.
-                    # 8-gram is preferred when present (higher-order coherence).
-                    for cand in (model_path_8, model_path, model_path_full):
-                        if os.path.exists(cand):
-                            try:
-                                ngram = NGramGenerator.load(cand)
-                                print(f"Loaded n-gram model from {cand}")
-                                break
-                            except Exception as load_err:
-                                print(f"Skipping corrupt model {cand}: {load_err}")
-                                ngram = None
-                    if ngram is None:
-                        # Train a small on-the-fly model if no valid model exists
-                        ngram = NGramGenerator(order=5, temperature=0.85)
-                        from backend.v2.generators.corpus_loader import CorpusLoader
-                        loader = CorpusLoader(
-                            os.path.join(_project, "data", "gutenberg")
-                        )
-                        sentences = loader.iter_sentences(max_files=10)
-                        ngram.train(sentences)
-                        # Persist so subsequent runs are fast
-                        try:
-                            ngram.save(model_path)
-                            print(f"Saved on-the-fly model to {model_path}")
-                        except Exception:
-                            pass
-                    self.generator = HybridGenerator(
-                        ngram_generator=ngram,
-                        voice_adapter=VoiceAdapter(),
-                        grammar_guard=GrammarGuard(),
-                        repetition_state=RepetitionState(),
-                        mode="hybrid",
-                        temperature=0.85,
-                    )
+                    ngram.save(model_path)
+                    print(f"Saved on-the-fly model to {model_path}")
                 except Exception:
-                    self.generator = None
+                    pass
+            self.generator = HybridGenerator(
+                ngram_generator=ngram,
+                voice_adapter=VoiceAdapter(),
+                grammar_guard=GrammarGuard(),
+                repetition_state=RepetitionState(),
+                mode="hybrid",
+                temperature=0.85,
+            )
 
         self.pipeline = ScenePipeline(
             conflict_resolver=self.conflict_resolver,

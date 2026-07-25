@@ -36,14 +36,3 @@ def is_hwse_enabled() -> bool:
 def is_hwse_full() -> bool:
     """Returns True only when FULL mode is active."""
     return get_hwse_mode() == HWSEMode.FULL
-
-
-def get_generation_backend() -> str:
-    """Read GENERATION_BACKEND from environment (default: 'hybrid').
-    
-    'hybrid'          — use NGramGenerator + HybridGenerator for text generation
-    'torch'           — use PyTorch tiny transformer (train on Kaggle, infer locally)
-    'mlx_transformer' — use MLX tiny transformer (Apple Silicon only)
-    'template'        — use legacy DramaticRealizer template pools (fallback)
-    """
-    return os.environ.get("GENERATION_BACKEND", "hybrid")

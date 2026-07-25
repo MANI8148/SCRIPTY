@@ -3,7 +3,7 @@
 Kaggle N-Gram Training — SCRIPTY v2
 ====================================
 Copy this ENTIRE file into ONE Kaggle cell and run.
-Before running, set your HF_TOKEN in the first line of code.
+Set your HF_TOKEN in the os.environ line below before running.
 
 Model saved to /kaggle/working/ngram_8gram.pkl
 Auto-uploads to HuggingFace Hub.
@@ -19,24 +19,21 @@ import numpy as np
 from tqdm.auto import tqdm
 from huggingface_hub import HfApi
 
-# ── Config ──────────────────────────────────────────────────
-# IMPORTANT: Set your HuggingFace token here before running!
-os.environ["HF_TOKEN"] = "YOUR_HF_TOKEN_HERE"
-HF_TOKEN = os.environ.get("HF_TOKEN", "")  # Set in Cell 1 before running
+# --- Config ---
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 HF_REPO = "darklord8777/scripty-ngram-8gram"
 NUM_BOOKS = 200
-MAX_LINES = 10000
+MAX_LINES = 100000
 ORDER = 8
 TEMPERATURE = 0.85
 WORKERS = 4
-EPOCHS = 100
+EPOCHS = 10
 
-# Login
 from huggingface_hub import login
 login(token=HF_TOKEN)
-print(f"Logged in. Training {ORDER}-gram, {NUM_BOOKS} books, {EPOCHS} epochs")
+print(f"Training {ORDER}-gram, {NUM_BOOKS} books, {EPOCHS} epochs")
 
-# ── Tokenizer ───────────────────────────────────────────────
+# --- Tokenizer ---
 _TOKEN_RE = re.compile(r"\b\w+(?:'\w+)?|[.,!?;:()[\]\"']", re.IGNORECASE)
 
 def tokenize(text):
@@ -52,7 +49,7 @@ def tokenize_batch(lines):
             result.append(toks)
     return result
 
-# ── Fast N-Gram Engine ──────────────────────────────────────
+# --- Fast N-Gram Engine ---
 class FastNgram:
     def __init__(self, order=8):
         self.order = order
@@ -60,8 +57,8 @@ class FastNgram:
         self.context_counts = Counter()
         self.vocab = set()
         self._word_freq = []
-        self._word_arr = None
-        self._word_probs = None
+        self._word_arr = np.array([])
+        self._word_probs = np.array([])
         self._continuation_cache = {}
         self._total_contexts = 1
         self._context_cache = {}
@@ -76,6 +73,18 @@ class FastNgram:
                 word = padded[i + self.order - 1]
                 self.ngram_counts[ctx][word] += 1
                 self.context_counts[ctx] += 1
+
+    def build_arrays(self):
+        wc = Counter()
+        for ctx_map in self.ngram_counts.values():
+            for w, c in ctx_map.items():
+                wc[w] += c
+        if not wc:
+            return
+        self._word_freq = wc.most_common(10000)
+        self._word_arr = np.array([w for w, _ in self._word_freq])
+        self._word_counts = np.array([c for _, c in self._word_freq], dtype=np.float64)
+        self._word_probs = self._word_counts / self._word_counts.sum()
 
     def precompute(self):
         print("Precomputing vocab lookup...")
@@ -105,7 +114,6 @@ class FastNgram:
                 s = s / s.sum()
                 return w, s
             return w, p
-
         d = 0.75
         ctx_count = self.context_counts.get(context, 0)
         ctx_map = self.ngram_counts.get(context, {})
@@ -138,6 +146,7 @@ class FastNgram:
         for _ in range(max_tokens):
             ctx = tuple(context[-(self.order - 1):])
             words, probs = self.get_probs(ctx, temperature)
+            probs = probs / probs.sum()
             word = np.random.choice(words, p=probs)
             if word == "</s>":
                 break
@@ -145,7 +154,7 @@ class FastNgram:
             context.append(word)
         return " ".join(generated)
 
-# ── Load Data ───────────────────────────────────────────────
+# --- Load Data ---
 print("\n" + "=" * 60)
 print("Step 1: Loading data from HuggingFace")
 print("=" * 60)
@@ -160,13 +169,11 @@ for example in tqdm(ds, desc="Downloading", total=NUM_BOOKS, unit="book"):
     text = example.get("text", "")
     if not isinstance(text, str):
         continue
-    # Split on actual newlines and sentence boundaries
     text_clean = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = []
     for ln in text_clean.split("\n"):
         if isinstance(ln, str) and len(ln.strip()) >= 20:
             lines.append(ln.strip())
-    # If book has few newlines, split on sentence boundaries
     if len(lines) < 50:
         for para in text_clean.split("\n\n"):
             if isinstance(para, str) and len(para.strip()) >= 20:
@@ -189,10 +196,10 @@ with ProcessPoolExecutor(max_workers=WORKERS) as ex:
 print(f"Tokenized {len(sentences):,} sentences in {time.time()-t1:.1f}s")
 
 if len(sentences) < 100:
-    print("ERROR: Too few sentences. Dataset might have changed.")
-    print("Sample raw_lines[0]:", raw_lines[0][:200] if raw_lines else "EMPTY")
+    print("ERROR: Too few sentences")
+    print("Sample:", raw_lines[0][:200] if raw_lines else "EMPTY")
 
-# ── Train ───────────────────────────────────────────────────
+# --- Train ---
 print("\n" + "=" * 60)
 print(f"Step 2: Training {ORDER}-gram, {EPOCHS} epochs")
 print("=" * 60)
@@ -208,8 +215,8 @@ for epoch in range(EPOCHS):
     for i in range(0, len(sentences), batch_size):
         idx = indices[i:i+batch_size]
         model.feed_batch([sentences[j] for j in idx])
+    model.build_arrays()
 
-    # Perplexity
     sample = sentences[-2000:]
     lp = 0.0
     nw = 0
@@ -235,7 +242,7 @@ for epoch in range(EPOCHS):
 print(f"\nTraining done in {time.time()-t0:.1f}s | Best PPL: {best_ppl:.2f}")
 model.precompute()
 
-# ── Test + Save + Upload ────────────────────────────────────
+# --- Test + Save + Upload ---
 print("\n" + "=" * 60)
 print("Step 3: Testing samples")
 print("=" * 60)

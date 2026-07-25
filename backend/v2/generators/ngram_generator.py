@@ -95,18 +95,18 @@ class NGramGenerator(TextGenerator):
 
         for _ in range(max_tokens):
             ctx = tuple(context[-(self.order - 1):])
-            probs = counter.get_vocab_probs(ctx, temp)
-            if not probs:
+            words, probs = counter.get_probs(ctx, temp)
+            if len(words) == 0:
                 break
 
             if modulate_fn is not None:
-                probs = modulate_fn(probs)
+                prob_dict = dict(zip(words, probs))
+                prob_dict = modulate_fn(prob_dict)
+                words = list(prob_dict.keys())
+                probs = np.array(list(prob_dict.values()))
 
-            words = list(probs.keys())
-            scores = np.array(list(probs.values()))
-            scores = scores / scores.sum()
-
-            next_token = np.random.choice(words, p=scores)
+            probs = probs / probs.sum()
+            next_token = np.random.choice(words, p=probs)
             tokens.append(next_token)
             context.append(next_token)
 

@@ -26,6 +26,10 @@ from backend.research.rag_pipeline import RAGPipeline
 from backend.research.research_responder import ResearchResponder, response_to_dict
 from backend.research.scripty_api import ScriptyAPI
 
+# v2 engine (lazy import — only loaded when USE_V2_ENGINE=true)
+USE_V2_ENGINE = os.environ.get("USE_V2_ENGINE", "false").lower() in ("1", "true", "yes")
+_v2_engine = None
+
 
 def _parse_lines(value: Any) -> list[str]:
     if isinstance(value, list):
@@ -82,6 +86,15 @@ bridge = DatasetBridge()
 rag_pipeline = RAGPipeline()
 research_responder = ResearchResponder(rag_pipeline)
 
+
+def _get_v2_engine():
+    """Lazy-load the v2 engine (heavy init, loaded once)."""
+    global _v2_engine
+    if _v2_engine is None:
+        from backend.v2.engine import StoryEngineV2
+        _v2_engine = StoryEngineV2(enable_hwse=False)
+    return _v2_engine
+
 app = Flask(__name__, static_folder=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend")))
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
@@ -127,12 +140,51 @@ def generate_story():
     if error:
         return jsonify({"error": error}), 400
     try:
+        if USE_V2_ENGINE:
+            return _generate_v2(args)
         result = asyncio.run(engine.generate_story(**args))
         status = 202 if result.get("story_mode") == "book" and result.get("job_id") else 200
         return jsonify(_jsonable(result)), status
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("generation failed")
         return jsonify({"error": str(exc)}), 500
+
+
+def _generate_v2(args: dict) -> tuple:
+    """Generate using the v2 pipeline. Runs async in a fresh event loop."""
+    from backend.v2.types import GenerationRequest, StoryMode as V2StoryMode
+    mode_str = str(args.get("story_mode", "short")).lower()
+    mode_map = {"short": V2StoryMode.SHORT, "chapter": V2StoryMode.CHAPTER, "book": V2StoryMode.BOOK}
+    v2_mode = mode_map.get(mode_str, V2StoryMode.SHORT)
+    req = GenerationRequest(
+        location=args.get("location_name", "London"),
+        year=args.get("year", 1850),
+        story_mode=v2_mode,
+        genre=args.get("genre"),
+        theme=args.get("theme"),
+        characters=args.get("characters"),
+        num_chapters=args.get("chapter_count", 1),
+    )
+    v2 = _get_v2_engine()
+    result = asyncio.run(v2.generate(req))
+    return jsonify({
+        "story_text": result.story_text,
+        "word_count": result.word_count,
+        "chapter_count": len(result.chapters),
+        "scene_count": sum(len(ch.scenes) for ch in result.chapters),
+        "engine": "v2",
+        "generation_time_ms": result.generation_time_ms,
+    }), 200
+
+
+@app.get("/api/engine")
+def engine_info():
+    """Return which generation engine is active."""
+    return jsonify({
+        "active_engine": "v2" if USE_V2_ENGINE else "v1",
+        "v2_enabled": USE_V2_ENGINE,
+        "hwse": os.environ.get("SCRIPTY_HWSE_MODE", "off"),
+    })
 
 
 @app.post("/api/evaluate")

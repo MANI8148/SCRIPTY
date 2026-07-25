@@ -14,6 +14,7 @@ Instructions:
 
 What this does:
 - Downloads 100 Gutenberg books via Hugging Face datasets
+  (common-pile/project_gutenberg — public, no auth needed)
 - Tokenizes to characters (vocab ~60)
 - Trains 3-layer, 128-dim transformer decoder
 - Saves checkpoint after every epoch
@@ -66,10 +67,14 @@ SPECIAL = {"<PAD>": 0, "<UNK>": 1, "<SOS>": 2, "<EOS>": 3}
 # ── Data Loading ──────────────────────────────────────────────────────
 
 def fetch_gutenberg(num_books=NUM_BOOKS, max_lines=MAX_LINES_PER_BOOK):
-    """Load books from Hugging Face Gutenberg dataset."""
+    """Load books from Hugging Face Gutenberg dataset.
+
+    Uses 'common-pile/project_gutenberg' — public, no auth needed.
+    Each row has a 'text' field with the full book text.
+    """
     from datasets import load_dataset
 
-    ds = load_dataset("hf_aisecure/gutenberg", split="train", streaming=True)
+    ds = load_dataset("common-pile/project_gutenberg", split="train", streaming=True)
     texts = []
     count = 0
     for example in tqdm(ds, desc="Loading Gutenberg", total=num_books):

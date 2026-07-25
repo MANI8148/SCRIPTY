@@ -240,7 +240,7 @@ class SlotFiller:
                 )
             if not tokens or len(tokens) < 3:
                 continue
-            if self._grammar and not self._grammar.validate(tokens):
+            if self._grammar and not self._grammar.validate(tokens)[0]:
                 continue
             text = self._detokenize(tokens)
             if not text or text.strip(" .") == "":
@@ -250,9 +250,9 @@ class SlotFiller:
             text = self._inject_characters(text)
             if self._repetition:
                 cat = self._slot_to_category(slot.category)
-                if self._repetition.is_repeated(text, cat):
+                if self._repetition.is_repeated(tokens, cat):
                     continue
-                self._repetition.track(text, cat)
+                self._repetition.track(tokens, cat)
             return text
         return ""
 
@@ -284,6 +284,10 @@ class SlotFiller:
         Uses ONLY words guaranteed to be in the Gutenberg vocabulary.
         Character names are NOT used as seeds (they are OOV).
         Instead, character names are injected post-generation.
+
+        Now incorporates: memories, agent beliefs/intentions, world state,
+        and preceding context so the generated text actually reflects
+        the story's state.
         """
         bp = self._last_blueprint
         location = ""
@@ -296,6 +300,61 @@ class SlotFiller:
                 location = getattr(obj, "location", "") or ""
                 purpose = getattr(obj, "purpose", "") or ""
                 conflict = getattr(obj, "conflict_type", "") or ""
+
+        # Gather additional context words from blueprint state
+        extra_words: list[str] = []
+        if bp is not None:
+            # 1. Agent beliefs and intentions
+            agent_states = getattr(bp, "agent_states", {})
+            agents_list = []
+            if isinstance(agent_states, dict):
+                agents_list = list(agent_states.values())
+            elif isinstance(agent_states, list):
+                agents_list = agent_states
+            for agent in agents_list:
+                for belief in getattr(getattr(agent, "character", None), "goals", []) or []:
+                    for w in str(belief).lower().split():
+                        wc = w.strip(",.!?;:'\"")
+                        if wc and len(wc) > 3:
+                            extra_words.append(wc)
+                intention = getattr(agent, "intention", None)
+                if intention:
+                    for w in str(intention).lower().split():
+                        wc = w.strip(",.!?;:'\"")
+                        if wc and len(wc) > 3:
+                            extra_words.append(wc)
+
+            # 2. Retrieved memories (episodic + semantic)
+            memories = getattr(bp, "retrieved_memories", None)
+            if memories is not None:
+                for mem_list in (getattr(memories, "episodic", []),
+                                 getattr(memories, "semantic", [])):
+                    for mem in mem_list[:3]:
+                        content = getattr(mem, "content", "") or str(getattr(mem, "fact", ""))
+                        for w in content.lower().split():
+                            wc = w.strip(",.!?;:'\"")
+                            if wc and len(wc) > 3:
+                                extra_words.append(wc)
+
+            # 3. World state (era, setting)
+            world = getattr(bp, "world", None)
+            if world is not None:
+                for attr in ("era", "setting_period", "location_name"):
+                    val = getattr(world, attr, None)
+                    if val:
+                        for w in str(val).lower().split():
+                            wc = w.strip(",.!?;:'\"")
+                            if wc and len(wc) > 3:
+                                extra_words.append(wc)
+
+            # 4. Preceding context (last 30 words of previous scene)
+            ctx = getattr(bp, "preceding_context", "") or ""
+            if ctx:
+                ctx_words = ctx.lower().split()[-30:]
+                for w in ctx_words:
+                    wc = w.strip(",.!?;:'\"")
+                    if wc and len(wc) > 3:
+                        extra_words.append(wc)
 
         # Extract in-vocab keywords from blueprint context
         keywords: list[str] = []
@@ -315,19 +374,26 @@ class SlotFiller:
                 ) and wc in _COMMON_NOUNS:
                     keywords.append(wc)
 
+        # Also add in-vocab extras from state
+        for w in extra_words:
+            if w in _COMMON_NOUNS and w not in keywords:
+                keywords.append(w)
+
         # Pick from context pools (guaranteed in-vocab)
         pools = _CONTEXT_POOLS.get(category, _GENERIC_CONTEXTS)
         base = self._rng.choice(pools)
         seed = base.split()
 
-        # Inject up to 2 location keywords if available
+        # Inject up to 3 context keywords (from objectives + state)
         if keywords:
-            kw = self._rng.choice(keywords)
-            # Insert keyword before last word of seed
-            if len(seed) >= 2:
-                seed.insert(-1, kw)
-            else:
-                seed.append(kw)
+            kw_sample = self._rng.sample(keywords, min(3, len(keywords)))
+            for kw in kw_sample:
+                if len(seed) < 6:
+                    # Insert before last word of seed
+                    if len(seed) >= 2:
+                        seed.insert(-1, kw)
+                    else:
+                        seed.append(kw)
 
         return seed[:6]
 
@@ -350,10 +416,20 @@ class SlotFiller:
         gender_map: dict[str, str] = {}
         agent_states = getattr(bp, "agent_states", {}) or {}
         for name, state in agent_states.items():
-            rec = getattr(state, "character", None) or getattr(state, "character", None)
+            rec = getattr(state, "character", None)
             traits = getattr(rec, "traits", []) if rec else []
-            # Use context: if no traits, default based on name convention
-            gender_map[name.lower()] = "he"
+            # Derive gender from traits (female-coded traits → "she"),
+            # otherwise fall back to a name-based heuristic.
+            female_traits = {"kind", "gentle", "compassionate", "wise", "pious",
+                             "spiritual", "deceptive", "cunning", "sly", "proud",
+                             "ambitious", "loyal", "mysterious", "melancholic"}
+            if any(t.lower() in female_traits for t in traits):
+                gender_map[name.lower()] = "she"
+            elif name.lower().endswith(("a", "e", "i", "ah", "ia", "na", "ra",
+                                         "la", "ma", "da")):
+                gender_map[name.lower()] = "she"
+            else:
+                gender_map[name.lower()] = "he"
 
         # For each character, inject natural references
         injected = text

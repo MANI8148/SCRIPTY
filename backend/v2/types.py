@@ -49,6 +49,110 @@ class RelationKind(Enum):
     FAMILY = "family"
     MENTOR = "mentor"
     SUBORDINATE = "subordinate"
+    LOVER = "lover"
+    FRIEND = "friend"
+    BETRAYER = "betrayer"
+    SWORN = "sworn"
+    STRANGER = "stranger"
+
+
+class Genre(Enum):
+    """Supported story genres — drive world/tone/structure defaults."""
+    HISTORICAL_FICTION = "historical_fiction"
+    FANTASY = "fantasy"
+    MYSTERY = "mystery"
+    ROMANCE = "romance"
+    HORROR = "horror"
+    SCIENCE_FICTION = "science_fiction"
+    ADVENTURE = "adventure"
+    DRAMA = "drama"
+    THRILLER = "thriller"
+    COMING_OF_AGE = "coming_of_age"
+    MYTHOLOGY = "mythology"
+    WESTERN = "western"
+    DYSTOPIA = "dystopia"
+    SLICE_OF_LIFE = "slice_of_life"
+
+
+class Tone(Enum):
+    SERIOUS = "serious"
+    MELANCHOLIC = "melancholic"
+    HOPEFUL = "hopeful"
+    GRIM = "grim"
+    WHIMSICAL = "whimsical"
+    TENSE = "tense"
+    WARM = "warm"
+    SATIRICAL = "satirical"
+    EPIC = "epic"
+    INTIMATE = "intimate"
+
+
+class Archetype(Enum):
+    """Classic character archetypes used for voice/intent seeding."""
+    HERO = "hero"
+    MENTOR = "mentor"
+    SHADOW = "shadow"
+    TRICKSTER = "trickster"
+    ALLY = "ally"
+    HERALD = "herald"
+    GUARDIAN = "guardian"
+    ORPHAN = "orphan"
+    CAREGIVER = "caregiver"
+    RULER = "ruler"
+    MAGICIAN = "magician"
+    EVERYMAN = "everyman"
+    INNOCENT = "innocent"
+    SEDUCER = "seducer"
+    OUTCAST = "outcast"
+
+
+class PlotDevice(Enum):
+    """Reusable narrative devices for foreshadowing/structure."""
+    RED_HERRING = "red_herring"
+    CHEKHOV_GUN = "chekhov_gun"
+    UNRELIABLE_NARRATOR = "unreliable_narrator"
+    FLASHBACK = "flashback"
+    FRAMING_STORY = "framing_story"
+    CLIFFHANGER = "cliffhanger"
+    TWIST = "twist"
+    MACGUFFIN = "macguffin"
+    MENTOR_DEATH = "mentor_death"
+    SECRET_IDENTITY = "secret_identity"
+    FORCED_CHOICE = "forced_choice"
+    RECKONING = "reckoning"
+
+
+class MemoryType(Enum):
+    """Categories of memory the system tracks and retrieves."""
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    BELIEF = "belief"
+    EMOTIONAL = "emotional"
+    RELATIONSHIP = "relationship"
+    INTERPRETATION = "interpretation"
+    CONSEQUENCE = "consequence"
+    CALLBACK = "callback"
+    SENSORY = "sensory"
+    INTENTION = "intention"
+
+
+class EmotionalValence(Enum):
+    """Coarse emotional charge used for memory/arc indexing."""
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+    AMBIVALENT = "ambivalent"
+
+
+class StoryStructure(Enum):
+    """Macro-structures the ArcPlanner can target."""
+    THREE_ACT = "three_act"
+    FIVE_ACT = "five_act"
+    HERO_JOURNEY = "hero_journey"
+    KISHOTEN_KETSU = "kishoten_ketsu"
+    SAVE_THE_CAT = "save_the_cat"
+    NONLINEAR = "nonlinear"
+    EPISODIC = "episodic"
 
 
 @dataclass

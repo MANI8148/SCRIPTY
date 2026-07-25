@@ -195,9 +195,11 @@ class ScenePipeline:
         self.realizer.perceive_scene(scene)
 
         # ── HWSE after_scene: Listening + Interrogation + Revision ─────────
-        # Mutates agent beliefs / memory via the HWSE passes.
+        # Mutates agent beliefs / memory via the HWSE passes AND may return a
+        # revised scene (high-priority revisions applied). Capture and return
+        # the revised text so the improvements actually reach the output.
         if self.enable_hwse and self._hwse is not None:
-            self._hwse.after_scene(
+            hwse_result = self._hwse.after_scene(
                 scene=scene,
                 agents=agents,
                 world=world,
@@ -206,6 +208,11 @@ class ScenePipeline:
                 chapter_num=chapter_num,
                 scene_num=scene_index,
             )
+            if hwse_result and hwse_result.get("revised_scene") is not None:
+                revised = hwse_result["revised_scene"]
+                if getattr(revised, "content", ""):
+                    scene = revised
+                    self.realizer.perceive_scene(scene)
 
         return scene
 

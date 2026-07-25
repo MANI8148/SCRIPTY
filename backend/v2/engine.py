@@ -9,6 +9,8 @@ from backend.v2.dramatic_realizer import DramaticRealizer
 from backend.v2.generators.base import TextGenerator
 from backend.v2.generators.hybrid_generator import HybridGenerator
 from backend.v2.generators.voice_adapter import VoiceAdapter
+from backend.v2.generators.grammar_guard import GrammarGuard
+from backend.v2.generators.repetition_state import RepetitionState
 from backend.v2.generators.ngram_generator import NGramGenerator
 from backend.v2.conflict_resolver import ConflictResolver
 from backend.v2.factories import build_character_agents
@@ -79,6 +81,12 @@ class StoryEngineV2:
         self.world_engine = world_engine or WorldEngine()
         self.world_state = world_state or self.world_engine
         self.rag_bridge = RAGBridge()
+        # Load external corpus (RAG) so StoryPlanner can seed from blueprints
+        # and fragments are available for episodic memory seeding.
+        try:
+            self.rag_bridge.load()
+        except Exception as e:
+            print(f"RAGBridge load failed (continuing without external corpus): {e}")
         self.memory = memory or MemorySystem()
         self.planner = planner or StoryPlanner(rag_bridge=self.rag_bridge)
         self.arc_planner = arc_planner or ArcPlanner(self.planner)
@@ -153,6 +161,8 @@ class StoryEngineV2:
                     self.generator = HybridGenerator(
                         ngram_generator=ngram,
                         voice_adapter=VoiceAdapter(),
+                        grammar_guard=GrammarGuard(),
+                        repetition_state=RepetitionState(),
                         mode="hybrid",
                         temperature=0.85,
                     )

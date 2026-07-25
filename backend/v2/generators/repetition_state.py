@@ -27,7 +27,13 @@ class RepetitionState:
     _token_buffer: deque[str] = field(default_factory=lambda: deque(maxlen=100))
 
     def track(self, tokens: list[str], category: str = "general") -> None:
-        """Add tokens to tracking buffers."""
+        """Add tokens to tracking buffers.
+
+        Accepts either a token list or a raw string (for callers that pass
+        pre-joined text). Internally normalised to a token list.
+        """
+        if isinstance(tokens, str):
+            tokens = tokens.split()
         self._token_buffer.extend(tokens)
 
         text = " ".join(tokens).strip()
@@ -42,6 +48,12 @@ class RepetitionState:
         if tokens:
             start = " ".join(tokens[:3])
             self.sentence_starts.append(start)
+
+    # Alias kept for backwards-compatible callers (tests, generators).
+    def is_repeated(self, tokens: list[str], category: str = "general") -> bool:
+        if isinstance(tokens, str):
+            tokens = tokens.split()
+        return self.is_repetitive(tokens, category)
 
     def is_repetitive(self, tokens: list[str], category: str = "general", threshold: float = 0.7) -> bool:
         """Check if tokens would be repetitive."""

@@ -78,13 +78,22 @@ class NGramGenerator(TextGenerator):
         context = tuple(seed) if seed else tuple(["<s>"] * (self.order - 1))
         tokens = list(context[-(self.order-1):]) if context else []
 
+        # Score the most frequent vocabulary entries (frequency-ranked) rather
+        # than the first 1000 insertion-order entries. Higher order models
+        # have large vocabularies; ranking by frequency keeps the common,
+        # high-probability words in scope so generation does not collapse.
+        if not hasattr(self, "_freq_vocab"):
+            self._freq_vocab = sorted(
+                self.vocabulary.items(), key=lambda kv: kv[1], reverse=True
+            )
+        freq_vocab = self._freq_vocab[: min(len(self._freq_vocab), 5000)]
+
         for _ in range(max_tokens):
             if len(context) < self.order - 1:
                 context = tuple(["<s>"] * (self.order - 1 - len(context))) + context
 
             probs = {}
-            vocab_items = list(self.vocabulary.keys())
-            for word in vocab_items[:1000]:
+            for word, _count in freq_vocab:
                 prob = self.model.score(word, context)
                 if prob > 0:
                     probs[word] = prob

@@ -8,7 +8,7 @@ Kaggle free GPU (P100/T4). The resulting model is saved as
 the 5-gram model when present).
 
 Direct HuggingFace access: the script streams books straight from the
-`hf_aisecure/gutenberg` dataset on Kaggle — no manual file upload needed.
+`common-pile/project_gutenberg` dataset on Kaggle — public, no auth needed.
 
 Usage on Kaggle:
 1. Create a new Notebook, enable GPU accelerator (P100/T4)
@@ -18,10 +18,8 @@ Usage on Kaggle:
 
 Env vars:
   SCRIPTY_NGRAM_ORDER   n-gram order (default 8)
-  SCRIPTY_HF_DATASET    HF dataset id (default hf_aisecure/gutenberg)
+  SCRIPTY_HF_DATASET    HF dataset id (default common-pile/project_gutenberg)
   SCRIPTY_HF_BOOKS      number of books to stream (default 200)
-  SCRIPTY_HF_USER       HF username (default darklord8777)
-  HF_TOKEN              HuggingFace API token (required for auth)
   SCRIPTY_OUTPUT        output path (default /kaggle/working/ngram_8gram.pkl)
 
 After training, loadable by:
@@ -62,13 +60,10 @@ MAX_FILES = int(os.environ.get("SCRIPTY_MAX_FILES", "0"))  # 0 = all
 OUTPUT_PATH = os.environ.get(
     "SCRIPTY_OUTPUT", "/kaggle/working/ngram_8gram.pkl"
 )
-# HuggingFace dataset to stream directly (no manual upload needed)
-HF_DATASET = os.environ.get("SCRIPTY_HF_DATASET", "hf_aisecure/gutenberg")
+# HuggingFace dataset to stream directly (no manual upload needed, public)
+HF_DATASET = os.environ.get("SCRIPTY_HF_DATASET", "common-pile/project_gutenberg")
 HF_NUM_BOOKS = int(os.environ.get("SCRIPTY_HF_BOOKS", "200"))
 HF_MAX_LINES = int(os.environ.get("SCRIPTY_HF_MAX_LINES", "8000"))
-# HuggingFace credentials — read from env (NEVER hardcode in committed code)
-HF_USER = os.environ.get("SCRIPTY_HF_USER", "darklord8777")
-HF_TOKEN = os.environ.get("HF_TOKEN", "") or os.environ.get("SCRIPTY_HF_TOKEN", "")
 
 # Common corpus locations on Kaggle / local (used only if HF download fails)
 CORPUS_CANDIDATES = [
@@ -96,24 +91,13 @@ def find_corpus() -> Path | None:
 
 def load_from_huggingface(num_books: int = HF_NUM_BOOKS,
                            max_lines: int = HF_MAX_LINES) -> list[list[str]]:
-    """Stream books directly from HuggingFace — no manual upload needed.
+    """Stream books directly from HuggingFace — public, no auth needed.
 
-    Requires `datasets` (auto-installed on Kaggle). If HF_TOKEN is set in
-    the environment, authenticates as SCRIPTY_HF_USER first so private or
-    gated datasets are accessible. Falls back to a local corpus directory
-    if the stream is unavailable.
+    Uses 'common-pile/project_gutenberg'. Falls back to a local corpus
+    directory if the stream is unavailable.
     """
     _ensure("datasets")
-    _ensure("huggingface_hub")
-    from huggingface_hub import login
     from datasets import load_dataset
-
-    if HF_TOKEN:
-        try:
-            login(token=HF_TOKEN, add_to_git_credential=False)
-            print(f"Authenticated to HuggingFace as '{HF_USER}'")
-        except Exception as e:
-            print(f"HF login failed ({e}); continuing anonymous")
 
     print(f"Streaming {num_books} books from HF dataset '{HF_DATASET}'...")
     ds = load_dataset(HF_DATASET, split="train", streaming=True)

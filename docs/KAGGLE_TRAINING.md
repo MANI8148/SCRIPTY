@@ -7,26 +7,30 @@ generation in SCRIPTY v2. Train it on Kaggle's free GPU.
 
 1. Go to **kaggle.com → Create → New Notebook**
 2. **Settings → Accelerator → GPU** (P100 or T4)
-3. In a first cell, set your HuggingFace token:
-   ```python
-   import os
-   os.environ["HF_TOKEN"] = "hf_xxxxxxxxxxxxxxxxxxxxxxxx"
-   os.environ["SCRIPTY_HF_USER"] = "darklord8777"
-   ```
-4. Paste `backend/v2/generators/train_kaggle_ngram.py` into the next cell and run
-5. It **streams 200 books directly from HuggingFace** (`hf_aisecure/gutenberg`)
-   authenticated as your account — no manual upload needed
-6. Download `ngram_8gram.pkl` from the **output** tab
-7. Place it in `models/ngram_8gram.pkl` (repo root → models/)
+3. Paste `backend/v2/generators/train_kaggle_ngram.py` into the next cell and run
+4. It **streams 200 books directly from HuggingFace** (`common-pile/project_gutenberg`)
+   — public dataset, **no auth needed**
+5. Download `ngram_8gram.pkl` from the **output** tab
+6. Place it in `models/ngram_8gram.pkl` (repo root → models/)
 
 The engine prefers the 8-gram model over the 5-gram when present.
 
 ## What the script does
 
-- Streams books from HuggingFace `hf_aisecure/gutenberg` dataset
+- Streams books from HuggingFace `common-pile/project_gutenberg`
 - Tokenizes to lowercase word tokens
 - Trains an **8-gram Kneser-Ney** smoothed language model (nltk)
 - Saves to `ngram_8gram.pkl`
+
+## Transformer Training (alternative)
+
+For the char-level transformer instead:
+
+1. Kaggle → New Notebook → GPU enabled
+2. Paste `backend/v2/generators/train_kaggle.py`
+3. Runs — saves `mlx_transformer.pkl` (~300KB)
+4. Download and place in `models/mlx_transformer.pkl`
+5. Set env: `GENERATION_BACKEND=mlx_transformer`
 
 ## Environment Variables
 
@@ -34,11 +38,9 @@ The engine prefers the 8-gram model over the 5-gram when present.
 |-----|---------|---------|
 | `SCRIPTY_NGRAM_ORDER` | `8` | N-gram order |
 | `SCRIPTY_NGRAM_TEMP` | `0.85` | Generation temperature |
-| `SCRIPTY_HF_DATASET` | `hf_aisecure/gutenberg` | HF dataset id |
+| `SCRIPTY_HF_DATASET` | `common-pile/project_gutenberg` | HF dataset id (public) |
 | `SCRIPTY_HF_BOOKS` | `200` | Number of books to stream |
 | `SCRIPTY_HF_MAX_LINES` | `8000` | Max lines per book |
-| `SCRIPTY_HF_USER` | `darklord8777` | HF username |
-| `HF_TOKEN` | _(unset)_ | HuggingFace API token (set before run) |
 | `SCRIPTY_MAX_FILES` | `0` (all) | Limit local files (fallback only) |
 | `SCRIPTY_OUTPUT` | `/kaggle/working/ngram_8gram.pkl` | Output path |
 
@@ -49,22 +51,6 @@ import os
 os.environ["SCRIPTY_NGRAM_ORDER"] = "8"
 os.environ["SCRIPTY_HF_BOOKS"] = "300"
 # then run the script cell
-```
-
-## Local Training (no GPU needed)
-
-```bash
-python -m backend.v2.generators.train \
-    --corpus data/gutenberg \
-    --output models/ngram_8gram.pkl \
-    --n 8 --max-files 0
-```
-
-Or use the parallel trainer for speed:
-
-```bash
-python -m backend.v2.generators.train_parallel \
-    --corpus data/gutenberg --output-dir models --n 8 --files-per-batch 25
 ```
 
 ## Engine Loading Order

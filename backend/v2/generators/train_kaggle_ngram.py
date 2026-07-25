@@ -64,6 +64,8 @@ def _tokenize_batch(lines: list[str]) -> list[list[str]]:
     """Tokenize a batch of lines (runs in worker process)."""
     result = []
     for line in lines:
+        if not isinstance(line, str):
+            continue
         toks = _tokenize(line)
         if len(toks) >= 3:
             result.append(toks)
@@ -175,7 +177,9 @@ def load_from_huggingface(num_books: int, max_lines: int) -> list[list[str]]:
 
     for example in tqdm(ds, desc="Downloading", total=num_books, unit="book"):
         text = example.get("text", "") or ""
-        lines = [ln.strip() for ln in text.split("\n") if len(ln.strip()) >= 20]
+        if not isinstance(text, str):
+            continue
+        lines = [ln.strip() for ln in text.split("\n") if isinstance(ln, str) and len(ln.strip()) >= 20]
         current_batch.extend(lines[:max_lines])
         count += 1
 
@@ -193,12 +197,18 @@ def load_from_huggingface(num_books: int, max_lines: int) -> list[list[str]]:
     print(f"Tokenizing with {NUM_WORKERS} workers...")
     t1 = time.time()
     sentences: list[list[str]] = []
-    batch_size = max(1, len(raw_batches) // NUM_WORKERS)
-    batches = [raw_batches[i:i+batch_size] for i in range(0, len(raw_batches), batch_size)]
+
+    # Flatten all lines into one list, then split into chunks for workers
+    all_lines: list[str] = []
+    for batch in raw_batches:
+        all_lines.extend(batch)
+
+    chunk_size = max(1, len(all_lines) // NUM_WORKERS)
+    chunks = [all_lines[i:i+chunk_size] for i in range(0, len(all_lines), chunk_size)]
 
     with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = {executor.submit(_tokenize_batch, batch): i for i, batch in enumerate(batches)}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing", unit="batch"):
+        futures = {executor.submit(_tokenize_batch, chunk): i for i, chunk in enumerate(chunks)}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing", unit="chunk"):
             result = future.result()
             sentences.extend(result)
 
@@ -229,18 +239,19 @@ def load_sentences_local(corpus_dir: Path, max_files: int = 0) -> list[list[str]
     for fpath in tqdm(files, desc="Loading files", unit="file"):
         try:
             text = fpath.read_text(encoding="utf-8", errors="ignore")
-            lines = [ln.strip() for ln in text.replace("\n", " ").split(".") if len(ln.strip()) >= 20]
-            all_lines.extend(lines)
+            if isinstance(text, str):
+                lines = [ln.strip() for ln in text.replace("\n", " ").split(".") if isinstance(ln, str) and len(ln.strip()) >= 20]
+                all_lines.extend(lines)
         except Exception:
             continue
 
     # Parallel tokenization
-    batch_size = max(1, len(all_lines) // NUM_WORKERS)
-    batches = [all_lines[i:i+batch_size] for i in range(0, len(all_lines), batch_size)]
+    chunk_size = max(1, len(all_lines) // NUM_WORKERS)
+    chunks = [all_lines[i:i+chunk_size] for i in range(0, len(all_lines), chunk_size)]
     sentences: list[list[str]] = []
     with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = [executor.submit(_tokenize_batch, b) for b in batches]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing", unit="batch"):
+        futures = [executor.submit(_tokenize_batch, c) for c in chunks]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing", unit="chunk"):
             sentences.extend(future.result())
     return sentences
 

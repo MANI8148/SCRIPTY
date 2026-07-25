@@ -117,6 +117,19 @@ class StoryEngineV2:
                     except Exception as load_err:
                         print(f"Skipping corrupt model {cand}: {load_err}")
                         ngram = None
+            # Try downloading from HuggingFace if no local model
+            if ngram is None:
+                try:
+                    from huggingface_hub import hf_hub_download
+                    hf_path = hf_hub_download(
+                        repo_id="darklord8777/scripty-ngram-8gram",
+                        filename="ngram_8gram.pkl",
+                        local_dir=os.path.join(_project, "models"),
+                    )
+                    ngram = NGramGenerator.load(hf_path)
+                    print(f"Loaded n-gram model from HuggingFace: {hf_path}")
+                except Exception:
+                    pass
             if ngram is None:
                 # Train a small on-the-fly model if no valid model exists
                 ngram = NGramGenerator(order=5, temperature=0.85)

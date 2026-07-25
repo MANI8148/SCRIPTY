@@ -1,397 +1,328 @@
 #!/usr/bin/env python3
 """
-Kaggle N-Gram Training Script — SCRIPTY v2 (Fast)
-==================================================
-Trains an 8-gram Kneser-Ney language model on the Gutenberg corpus.
-Uses multiprocessing + numpy for fast training (10x faster than NLTK).
+Kaggle N-Gram Training — SCRIPTY v2 (Production)
+=================================================
+Copy each cell into a separate Kaggle notebook cell.
+Model saved to /kaggle/working/ngram_8gram.pkl
+Optionally uploads to HuggingFace Hub.
 
-Usage on Kaggle:
-1. Create a new Notebook, enable GPU accelerator (P100/T4)
-2. Paste this script into a cell (or upload it)
-3. Run — model saved to /kaggle/working/ngram_8gram.pkl
-4. Download from the Kaggle output tab and place in backend/../models/
-
-Env vars:
-  SCRIPTY_NGRAM_ORDER   n-gram order (default 8)
-  SCRIPTY_HF_DATASET    HF dataset id (default common-pile/project_gutenberg)
-  SCRIPTY_HF_BOOKS      number of books to stream (default 200)
-  SCRIPTY_OUTPUT        output path (default /kaggle/working/ngram_8gram.pkl)
+CELL 1: Install + Config + HF Login
+CELL 2: Fast N-Gram Engine
+CELL 3: Data Loading
+CELL 4: Training (100 epochs)
+CELL 5: Test + Save + Upload
 """
 
-from __future__ import annotations
+# ================================================================
+# CELL 1 — Install + Config + HF Login
+# ================================================================
+# !pip install -q tqdm numpy datasets huggingface_hub
+#
+# import os
+# os.environ["HF_TOKEN"] = "hf_..."  # Your HuggingFace token
+#
+# from huggingface_hub import login
+# login(token=os.environ["HF_TOKEN"])
+#
+# # Training config
+# NUM_BOOKS = 200
+# MAX_LINES = 10000
+# ORDER = 8
+# TEMPERATURE = 0.85
+# WORKERS = 4
+# EPOCHS = 100
+# BATCH_SIZE因子 = 10  # sentences per batch = total / this
+#
+# HF_REPO = "darklord8777/scripty-ngram-8gram"  # Will create if needed
+#
+# print(f"Config: {NUM_BOOKS} books, {ORDER}-gram, {EPOCHS} epochs")
+# print(f"HF repo: {HF_REPO}")
 
-import os
-import pickle
+# ================================================================
+# CELL 2 — Fast N-Gram Engine
+# ================================================================
+"""
 import re
-import sys
-import time
-from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
-
-# ── Dependencies ────────────────────────────────────────────────────────
-def _ensure(pkg: str) -> None:
-    try:
-        __import__(pkg.replace("-", "_"))
-    except ImportError:
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
-
-_ensure("tqdm")
-_ensure("numpy")
-_ensure("datasets")
-
 import numpy as np
-from tqdm.auto import tqdm
+from collections import Counter, defaultdict
 
-# ── Configuration ───────────────────────────────────────────────────────
-ORDER = int(os.environ.get("SCRIPTY_NGRAM_ORDER", "8"))
-TEMPERATURE = float(os.environ.get("SCRIPTY_NGRAM_TEMP", "0.85"))
-MAX_FILES = int(os.environ.get("SCRIPTY_MAX_FILES", "0"))
-OUTPUT_PATH = os.environ.get("SCRIPTY_OUTPUT", "/kaggle/working/ngram_8gram.pkl")
-HF_DATASET = os.environ.get("SCRIPTY_HF_DATASET", "common-pile/project_gutenberg")
-HF_NUM_BOOKS = int(os.environ.get("SCRIPTY_HF_BOOKS", "200"))
-HF_MAX_LINES = int(os.environ.get("SCRIPTY_HF_MAX_LINES", "8000"))
-NUM_WORKERS = int(os.environ.get("SCRIPTY_WORKERS", "4"))
+_TOKEN_RE = re.compile(r"\\b\\w+(?:'\\w+)?|[.,!?;:()[\\]\"']", re.IGNORECASE)
 
-# ── Tokenization ────────────────────────────────────────────────────────
-_TOKEN_RE = re.compile(r"\b\w+(?:'\w+)?|\.|,|!|\?|;|:|\"|'|\(|\)", re.IGNORECASE)
-
-def _tokenize(text: str) -> list[str]:
+def tokenize(text):
     return _TOKEN_RE.findall(text.lower())
 
-def _tokenize_batch(lines: list[str]) -> list[list[str]]:
-    """Tokenize a batch of lines (runs in worker process)."""
-    result = []
-    for line in lines:
-        if not isinstance(line, str):
-            continue
-        toks = _tokenize(line)
-        if len(toks) >= 3:
-            result.append(toks)
-    return result
-
-# ── N-gram counting (fast, numpy-based) ─────────────────────────────────
-class FastNgramCounter:
-    """Count n-grams using Python dicts — much faster than NLTK's generator."""
-
-    def __init__(self, order: int):
+class FastNgram:
+    def __init__(self, order=8):
         self.order = order
-        self.ngram_counts: dict[tuple, Counter] = {}
-        self.context_counts: Counter = Counter()
-        self.vocab: set[str] = set()
+        self.ngram_counts = defaultdict(Counter)
+        self.context_counts = Counter()
+        self.vocab = set()
+        self._word_freq = []
+        self._word_arr = None
+        self._word_probs = None
+        self._continuation_cache = {}
+        self._total_contexts = 1
+        self._context_cache = {}
+        self._context_cache_limit = 500000
 
-    def feed(self, sentences: list[list[str]]) -> None:
-        """Count all n-grams from tokenized sentences."""
+    def feed_batch(self, sentences):
         for sent in sentences:
             padded = ["<s>"] * (self.order - 1) + sent + ["</s>"]
             self.vocab.update(sent)
             for i in range(len(padded) - self.order):
-                context = tuple(padded[i:i + self.order - 1])
+                ctx = tuple(padded[i:i + self.order - 1])
                 word = padded[i + self.order - 1]
-                if context not in self.ngram_counts:
-                    self.ngram_counts[context] = Counter()
-                self.ngram_counts[context][word] += 1
-                self.context_counts[context] += 1
+                self.ngram_counts[ctx][word] += 1
+                self.context_counts[ctx] += 1
 
-    def score(self, word: str, context: tuple) -> float:
-        """Kneser-Ney smoothed score for P(word | context)."""
-        d = 0.75  # discount
+    def precompute(self):
+        print("Precomputing vocab lookup tables...")
+        word_counter = Counter()
+        for ctx_map in self.ngram_counts.values():
+            for w, c in ctx_map.items():
+                word_counter[w] += c
+        self._word_freq = word_counter.most_common(10000)
+        self._word_arr = np.array([w for w, _ in self._word_freq])
+        self._word_counts = np.array([c for _, c in self._word_freq], dtype=np.float64)
+        self._word_probs = self._word_counts / self._word_counts.sum()
+
+        self._continuation_cache = {}
+        self._total_contexts = 0
+        for ctx_map in self.ngram_counts.values():
+            self._total_contexts += len(ctx_map)
+            for w in ctx_map:
+                self._continuation_cache[w] = self._continuation_cache.get(w, 0) + 1
+        self._total_contexts = max(self._total_contexts, 1)
+        print(f"  Top words: {len(self._word_arr):,} | Continuations: {len(self._continuation_cache):,}")
+
+    def get_probs(self, context, temperature=0.85):
+        cache_key = context
+        if cache_key in self._context_cache:
+            cached_words, cached_probs = self._context_cache[cache_key]
+            if temperature != 1.0:
+                scaled = cached_probs ** (1.0 / max(temperature, 0.01))
+                scaled = scaled / scaled.sum()
+                return cached_words, scaled
+            return cached_words, cached_probs
+
+        d = 0.75
         ctx_count = self.context_counts.get(context, 0)
-        if ctx_count == 0:
-            return 1.0 / max(len(self.vocab), 1)
-
-        # Direct count
-        direct = self.ngram_counts.get(context, {}).get(word, 0)
-        if direct > 0:
-            direct_score = max(direct - d, 0) / ctx_count
-        else:
-            direct_score = 0.0
-
-        # Lower-order continuation weight
-        lambda_weight = d / ctx_count * self._num_contexts(context)
-        lower_score = lambda_weight * self._continuation_prob(word)
-
-        return direct_score + lower_score
-
-    def _num_contexts(self, context: tuple) -> int:
-        """Number of unique words following this context."""
-        return len(self.ngram_counts.get(context, {}))
-
-    def _continuation_prob(self, word: str) -> float:
-        """Probability of word appearing in any context (continuation)."""
-        total_contexts = sum(len(v) for v in self.ngram_counts.values())
-        if total_contexts == 0:
-            return 1.0 / max(len(self.vocab), 1)
-        word_contexts = sum(
-            1 for ctx_map in self.ngram_counts.values()
-            if word in ctx_map
-        )
-        return word_contexts / total_contexts
-
-    def get_vocab_probs(self, context: tuple, temperature: float = 1.0) -> dict[str, float]:
-        """Get probability distribution over vocab for a given context."""
-        probs = {}
-        # Check all n-grams seen in this context
         ctx_map = self.ngram_counts.get(context, {})
-        for word in ctx_map:
-            s = self.score(word, context)
-            if s > 0:
-                probs[word] = s
 
-        # Also check top continuation words if context is rare
-        if len(probs) < 50:
-            continuation_scores = Counter()
-            for ctx, word_counts in self.ngram_counts.items():
-                if ctx[1:] == context[-(self.order - 2):] if len(context) >= self.order - 2 else True:
-                    for w, c in word_counts.items():
-                        continuation_scores[w] += c
-            for w, c in continuation_scores.most_common(200):
-                if w not in probs:
-                    probs[w] = self.score(w, context) * 0.5
+        n = len(self._word_arr)
+        scores = np.zeros(n, dtype=np.float64)
 
-        # Temperature scaling
-        if temperature != 1.0 and probs:
-            words = list(probs.keys())
-            logps = np.array([np.log(max(p, 1e-10)) for p in probs.values()])
-            logps = logps / temperature
-            logps -= logps.max()
-            exps = np.exp(logps)
-            new_probs = exps / exps.sum()
-            probs = dict(zip(words, new_probs.tolist()))
+        for i, word in enumerate(self._word_arr):
+            direct = ctx_map.get(word, 0)
+            if direct > 0 and ctx_count > 0:
+                scores[i] = max(direct - d, 0) / ctx_count
+            cont = self._continuation_cache.get(word, 0)
+            if ctx_count > 0:
+                scores[i] += (d / ctx_count) * (cont / self._total_contexts)
 
-        return probs
+        mask = scores > 0
+        if not mask.any():
+            return self._word_arr[:200], self._word_probs[:200]
 
-# ── Data loading ────────────────────────────────────────────────────────
-def load_from_huggingface(num_books: int, max_lines: int) -> list[list[str]]:
-    """Stream books from HuggingFace with parallel tokenization."""
-    from datasets import load_dataset
+        words = self._word_arr[mask]
+        probs = scores[mask]
+        probs = probs / probs.sum()
 
-    print(f"Streaming {num_books} books from HF dataset '{HF_DATASET}'...")
-    t0 = time.time()
-    ds = load_dataset(HF_DATASET, split="train", streaming=True)
+        if len(self._context_cache) < self._context_cache_limit:
+            self._context_cache[cache_key] = (words, probs)
 
-    raw_batches: list[list[str]] = []
-    current_batch: list[str] = []
-    count = 0
+        if temperature != 1.0:
+            scaled = probs ** (1.0 / max(temperature, 0.01))
+            scaled = scaled / scaled.sum()
+            return words, scaled
+        return words, probs
 
-    for example in tqdm(ds, desc="Downloading", total=num_books, unit="book"):
-        text = example.get("text", "") or ""
-        if not isinstance(text, str):
+    def generate(self, seed_tokens, max_tokens=50, temperature=0.85):
+        context = ["<s>"] * (self.order - 1) + seed_tokens
+        generated = list(seed_tokens)
+        for _ in range(max_tokens):
+            ctx = tuple(context[-(self.order - 1):])
+            words, probs = self.get_probs(ctx, temperature)
+            word = np.random.choice(words, p=probs)
+            if word == "</s>":
+                break
+            generated.append(word)
+            context.append(word)
+        return " ".join(generated)
+
+print("FastNgram engine ready")
+"""
+
+# ================================================================
+# CELL 3 — Data Loading
+# ================================================================
+"""
+from datasets import load_dataset
+from tqdm.auto import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
+
+def tokenize_batch(lines):
+    result = []
+    for line in lines:
+        if not isinstance(line, str):
             continue
-        lines = [ln.strip() for ln in text.split("\n") if isinstance(ln, str) and len(ln.strip()) >= 20]
-        current_batch.extend(lines[:max_lines])
-        count += 1
+        toks = tokenize(line)
+        if len(toks) >= 3:
+            result.append(toks)
+    return result
 
-        if count % 20 == 0 or count >= num_books:
-            if current_batch:
-                raw_batches.append(current_batch)
-                current_batch = []
+t0 = time.time()
+ds = load_dataset("common-pile/project_gutenberg", split="train", streaming=True)
 
-        if count >= num_books:
-            break
+raw_lines = []
+count = 0
+for example in tqdm(ds, desc="Downloading books", total=NUM_BOOKS, unit="book"):
+    text = example.get("text", "")
+    if not isinstance(text, str):
+        continue
+    lines = [ln.strip() for ln in text.split("\\n") if isinstance(ln, str) and len(ln.strip()) >= 20]
+    raw_lines.extend(lines[:MAX_LINES])
+    count += 1
+    if count >= NUM_BOOKS:
+        break
 
-    print(f"Downloaded {count} books in {time.time()-t0:.1f}s")
+print(f"Downloaded {count} books, {len(raw_lines):,} lines in {time.time()-t0:.1f}s")
 
-    # Parallel tokenization
-    print(f"Tokenizing with {NUM_WORKERS} workers...")
-    t1 = time.time()
-    sentences: list[list[str]] = []
+t1 = time.time()
+chunk_size = max(1, len(raw_lines) // WORKERS)
+chunks = [raw_lines[i:i+chunk_size] for i in range(0, len(raw_lines), chunk_size)]
 
-    # Flatten all lines into one list, then split into chunks for workers
-    all_lines: list[str] = []
-    for batch in raw_batches:
-        all_lines.extend(batch)
+sentences = []
+with ProcessPoolExecutor(max_workers=WORKERS) as ex:
+    futures = [ex.submit(tokenize_batch, c) for c in chunks]
+    for f in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing"):
+        sentences.extend(f.result())
 
-    chunk_size = max(1, len(all_lines) // NUM_WORKERS)
-    chunks = [all_lines[i:i+chunk_size] for i in range(0, len(all_lines), chunk_size)]
+print(f"Tokenized {len(sentences):,} sentences in {time.time()-t1:.1f}s")
+print(f"Total load time: {time.time()-t0:.1f}s")
+"""
 
-    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = {executor.submit(_tokenize_batch, chunk): i for i, chunk in enumerate(chunks)}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing", unit="chunk"):
-            result = future.result()
-            sentences.extend(result)
+# ================================================================
+# CELL 4 — Training (100 epochs)
+# ================================================================
+"""
+import time
 
-    print(f"Tokenized {len(sentences):,} sentences in {time.time()-t1:.1f}s")
-    return sentences
+batch_size = max(1, len(sentences) // 10)
+model = FastNgram(order=ORDER)
 
-def find_corpus() -> Path | None:
-    candidates = [
-        "/kaggle/input/gutenberg-books",
-        "/kaggle/input/gutenberg",
-        "/kaggle/input/gutenberg-corpus",
-        os.path.join(os.getcwd(), "data", "gutenberg"),
-        os.path.join(os.getcwd(), "gutenberg"),
-    ]
-    for cand in candidates:
-        p = Path(cand)
-        if p.exists() and p.is_dir():
-            txt = list(p.glob("*.txt"))
-            if txt:
-                return p
-    return None
+print(f"Training {ORDER}-gram on {len(sentences):,} sentences")
+print(f"Epochs: {EPOCHS} | Batch size: {batch_size}")
+print("=" * 70)
 
-def load_sentences_local(corpus_dir: Path, max_files: int = 0) -> list[list[str]]:
-    files = sorted(corpus_dir.glob("*.txt"))
-    if max_files > 0:
-        files = files[:max_files]
-    all_lines: list[str] = []
-    for fpath in tqdm(files, desc="Loading files", unit="file"):
-        try:
-            text = fpath.read_text(encoding="utf-8", errors="ignore")
-            if isinstance(text, str):
-                lines = [ln.strip() for ln in text.replace("\n", " ").split(".") if isinstance(ln, str) and len(ln.strip()) >= 20]
-                all_lines.extend(lines)
-        except Exception:
-            continue
+t0 = time.time()
+best_ppl = float("inf")
 
-    # Parallel tokenization
-    chunk_size = max(1, len(all_lines) // NUM_WORKERS)
-    chunks = [all_lines[i:i+chunk_size] for i in range(0, len(all_lines), chunk_size)]
-    sentences: list[list[str]] = []
-    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = [executor.submit(_tokenize_batch, c) for c in chunks]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Tokenizing", unit="chunk"):
-            sentences.extend(future.result())
-    return sentences
+for epoch in range(EPOCHS):
+    epoch_t0 = time.time()
 
-# ── Training ────────────────────────────────────────────────────────────
-def train_fast(sentences: list[list[str]]) -> tuple[FastNgramCounter, dict]:
-    """Train n-gram model with progress tracking."""
-    t0 = time.time()
-    counter = FastNgramCounter(ORDER)
+    indices = np.random.permutation(len(sentences))
+    for i in range(0, len(sentences), batch_size):
+        batch_idx = indices[i:i+batch_size]
+        batch = [sentences[j] for j in batch_idx]
+        model.feed_batch(batch)
 
-    # Process in batches for progress
-    batch_size = max(1, len(sentences) // 10)
-    batches = [sentences[i:i+batch_size] for i in range(0, len(sentences), batch_size)]
+    # Perplexity on held-out sample
+    sample = sentences[-2000:]
+    log_prob = 0.0
+    n_words = 0
+    for sent in sample:
+        padded = ["<s>"] * (ORDER - 1) + sent + ["</s>"]
+        for j in range(ORDER - 1, len(padded)):
+            ctx = tuple(padded[j - ORDER + 1:j])
+            word = padded[j]
+            words, probs = model.get_probs(ctx, TEMPERATURE)
+            if word in words:
+                idx = np.where(words == word)[0]
+                if len(idx) > 0:
+                    log_prob += np.log(max(probs[idx[0]], 1e-10))
+                    n_words += 1
 
-    print(f"Training {ORDER}-gram model on {len(sentences):,} sentences...")
-    for i, batch in enumerate(tqdm(batches, desc=f"Epoch 1/1", unit="batch")):
-        counter.feed(batch)
-        if (i + 1) % 5 == 0:
-            elapsed = time.time() - t0
-            rate = (i + 1) * batch_size / elapsed
-            eta = (len(batches) - i - 1) * batch_size / max(rate, 1)
-            tqdm.write(f"  Batch {i+1}/{len(batches)} | "
-                      f"{rate:.0f} sent/s | ETA: {eta:.0f}s | "
-                      f"Vocab: {len(counter.vocab):,} | "
-                      f"Contexts: {len(counter.ngram_counts):,}")
+    ppl = np.exp(-log_prob / max(n_words, 1))
+    if ppl < best_ppl:
+        best_ppl = ppl
+    epoch_time = time.time() - epoch_t0
 
-    elapsed = time.time() - t0
-    print(f"\nTraining complete in {elapsed:.1f}s")
-    print(f"  Vocab: {len(counter.vocab):,} words")
-    print(f"  Contexts: {len(counter.ngram_counts):,}")
-    print(f"  Rate: {len(sentences)/elapsed:.0f} sentences/s")
+    if (epoch + 1) % 10 == 0 or epoch == 0:
+        print(f"Epoch {epoch+1:3d}/{EPOCHS} | PPL: {ppl:7.2f} | Best: {best_ppl:7.2f} | "
+              f"Vocab: {len(model.vocab):,} | Ctx: {len(model.ngram_counts):,} | "
+              f"{epoch_time:.1f}s")
 
-    # Build vocab dict for compatibility
-    vocab_dict = {}
-    word_counter = Counter()
-    for sent in sentences:
-        for w in sent:
-            word_counter[w] += 1
-    vocab_dict = dict(word_counter.most_common(10000))
+print(f"\\nTraining complete in {time.time()-t0:.1f}s")
+print(f"Best perplexity: {best_ppl:.2f}")
 
-    return counter, vocab_dict
+model.precompute()
+"""
 
-# ── Save ────────────────────────────────────────────────────────────────
-def save_model(counter: FastNgramCounter, vocab: dict, path: str) -> None:
-    """Save in NGramGenerator-compatible format."""
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
+# ================================================================
+# CELL 5 — Test + Save + Upload
+# ================================================================
+"""
+import pickle
+import os
+from huggingface_hub import HfApi
 
-    # Convert to NLTK-compatible format for loading
-    model_data = {
-        "order": ORDER,
-        "temperature": TEMPERATURE,
-        "vocabulary": vocab,
-        # Store our fast counter
-        "_fast_counter": counter,
-        # Also store NLTK-compatible format
-        "_use_fast": True,
-    }
+print("=" * 70)
+print("Sample Generation:")
+print("=" * 70)
 
-    with open(out, "wb") as f:
-        pickle.dump(model_data, f)
+seeds = [
+    "the", "she", "it was", "in the", "he said",
+    "the old man", "she walked", "it was a dark",
+    "in the morning", "he said nothing",
+    "the city was", "she looked at the", "there was a",
+]
 
-    size_mb = out.stat().st_size / (1024 * 1024)
-    print(f"Saved -> {out} ({size_mb:.1f} MB)")
+for seed in seeds:
+    text = model.generate(seed.split(), max_tokens=40, temperature=0.85)
+    print(f"  {seed:25s} → {text[:70]}")
 
-# ── Sample generation ───────────────────────────────────────────────────
-def generate_sample(counter: FastNgramCounter, seed: str, max_tokens: int = 50) -> str:
-    """Generate text from the trained model."""
-    tokens = _tokenize(seed)
-    context = ["<s>"] * (ORDER - 1) + tokens
-    generated = list(tokens)
+print()
+print("=" * 70)
+print("Saving model...")
+print("=" * 70)
 
-    for _ in range(max_tokens):
-        ctx = tuple(context[-(ORDER - 1):])
-        probs = counter.get_vocab_probs(ctx, TEMPERATURE)
-        if not probs:
-            break
-        words = list(probs.keys())
-        probs_arr = np.array([probs[w] for w in words])
-        probs_arr = probs_arr / probs_arr.sum()
-        idx = np.random.choice(len(words), p=probs_arr)
-        word = words[idx]
-        if word == "</s>":
-            break
-        generated.append(word)
-        context.append(word)
+vocab_dict = dict(model._word_freq) if model._word_freq else {}
+save_data = {
+    "order": ORDER,
+    "temperature": TEMPERATURE,
+    "vocabulary": vocab_dict,
+    "model": None,
+    "_fast_counter": model,
+    "_use_fast": True,
+}
 
-    return " ".join(generated)
+out_path = "/kaggle/working/ngram_8gram.pkl"
+with open(out_path, "wb") as f:
+    pickle.dump(save_data, f)
 
-# ── Main ────────────────────────────────────────────────────────────────
-def main() -> None:
-    total_t0 = time.time()
-    print("=" * 60)
-    print("SCRIPTY v2 — Kaggle N-Gram Trainer (Fast)")
-    print("=" * 60)
-    print(f"ORDER={ORDER}  TEMP={TEMPERATURE}  BOOKS={HF_NUM_BOOKS}  WORKERS={NUM_WORKERS}")
-    print(f"Output: {OUTPUT_PATH}")
-    print()
+size_mb = os.path.getsize(out_path) / (1024 * 1024)
+print(f"Saved -> {out_path} ({size_mb:.1f} MB)")
 
-    # 1. Load data
-    sentences = None
-    try:
-        sentences = load_from_huggingface(HF_NUM_BOOKS, HF_MAX_LINES)
-    except Exception as e:
-        print(f"HF stream unavailable ({e}); falling back to local corpus")
+# Upload to HuggingFace
+print()
+print("=" * 70)
+print(f"Uploading to HuggingFace: {HF_REPO}")
+print("=" * 70)
 
-    if not sentences:
-        corpus_dir = find_corpus()
-        if corpus_dir is None:
-            print("ERROR: No corpus found")
-            sys.exit(1)
-        print(f"Corpus: {corpus_dir}")
-        sentences = load_sentences_local(corpus_dir, MAX_FILES)
-
-    if not sentences:
-        print("ERROR: No sentences loaded")
-        sys.exit(1)
-
-    print(f"\nTotal sentences: {len(sentences):,}")
-    print(f"Data loading: {time.time()-total_t0:.1f}s")
-    print()
-
-    # 2. Train
-    counter, vocab = train_fast(sentences)
-
-    # 3. Save
-    print()
-    save_model(counter, vocab, OUTPUT_PATH)
-
-    # 4. Sample
-    print("\n" + "=" * 60)
-    print("Sample generation:")
-    print("=" * 60)
-    for seed in ["the", "she", "it was", "he said", "in the"]:
-        text = generate_sample(counter, seed, max_tokens=40)
-        print(f"  [{seed}] → {text[:80]}")
-
-    total_time = time.time() - total_t0
-    print(f"\nTotal time: {total_time:.1f}s ({total_time/60:.1f} min)")
-    print("Download from Kaggle output tab → ngram_8gram.pkl")
-
-
-if __name__ == "__main__":
-    main()
+api = HfApi()
+try:
+    api.create_repo(HF_REPO, repo_type="model", exist_ok=True)
+    api.upload_file(
+        path_or_fileobj=out_path,
+        path_in_repo="ngram_8gram.pkl",
+        repo_id=HF_REPO,
+        repo_type="model",
+        commit_message=f"Train {ORDER}-gram model on {NUM_BOOKS} books, PPL={best_ppl:.2f}",
+    )
+    print(f"Uploaded! https://huggingface.co/{HF_REPO}")
+except Exception as e:
+    print(f"Upload failed: {e}")
+    print("Download manually from Kaggle Output tab")
+"""
